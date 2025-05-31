@@ -117,55 +117,230 @@ GOOGLE_API_KEY = st.sidebar.text_input(
 )
 
 # Funções auxiliares
+def extrair_valor_escalar(series_ou_df):
+    """Extrai um valor escalar de uma Series ou DataFrame de forma robusta"""
+    try:
+        if isinstance(series_ou_df, pd.DataFrame):
+            if series_ou_df.empty:
+                return 0.0
+            return float(series_ou_df.iloc[0, 0])
+        elif isinstance(series_ou_df, pd.Series):
+            if series_ou_df.empty:
+                return 0.0
+            return float(series_ou_df.iloc[0])
+        elif isinstance(series_ou_df, (int, float, np.number)):
+            return float(series_ou_df)
+        elif hasattr(series_ou_df, 'values'):
+            # Para arrays numpy ou outros tipos array-like
+            return float(series_ou_df.values.flatten()[0])
+        else:
+            return float(series_ou_df)
+    except (IndexError, TypeError, ValueError) as e:
+        st.warning(f"⚠️ Erro ao extrair valor escalar: {e}. Retornando 0.0")
+        return 0.0
+
 def adicionar_indicadores_tecnicos(df):
-    """Adiciona indicadores técnicos ao DataFrame"""
-    df = df.copy()
-
-    # Garantir que os dados sejam Series 1D
-    close_prices = df['Close'].squeeze()
-    volume = df['Volume'].squeeze()
-    high_prices = df['High'].squeeze()
-    low_prices = df['Low'].squeeze()
-
-    # Médias Móveis
-    df['SMA_7'] = ta.trend.sma_indicator(close_prices, window=7)
-    df['SMA_21'] = ta.trend.sma_indicator(close_prices, window=21)
-    df['EMA_9'] = ta.trend.ema_indicator(close_prices, window=9)
-
-    # RSI
-    df['RSI'] = ta.momentum.rsi(close_prices, window=14)
-
-    # MACD
-    macd = ta.trend.MACD(close_prices)
-    df['MACD'] = macd.macd()
-    df['MACD_signal'] = macd.macd_signal()
-
-    # Bollinger Bands
-    bollinger = ta.volatility.BollingerBands(close_prices)
-    df['BB_upper'] = bollinger.bollinger_hband()
-    df['BB_lower'] = bollinger.bollinger_lband()
-    df['BB_width'] = df['BB_upper'] - df['BB_lower']
-
-    # Volume indicators
-    df['Volume_SMA'] = ta.trend.sma_indicator(volume, window=10)
-    df['Volume_ratio'] = df['Volume'] / df['Volume_SMA']
-
-    # Price features
-    df['High_Low_pct'] = (high_prices - low_prices) / close_prices * 100
-    df['Price_change'] = close_prices.pct_change()
-
-    df.dropna(inplace=True)
-    return df
+    """Adiciona indicadores técnicos ao DataFrame com tratamento robusto de erro"""
+    try:
+        if df is None or df.empty:
+            st.error("❌ DataFrame vazio ou None fornecido para indicadores técnicos")
+            return None
+        
+        df = df.copy()
+        
+        # Verificar se as colunas necessárias existem
+        required_columns = ['Close', 'Volume', 'High', 'Low']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            st.error(f"❌ Colunas necessárias ausentes para indicadores técnicos: {missing_columns}")
+            return None
+        
+        # Garantir que os dados sejam Series 1D e tratar valores NaN
+        # Corrigindo o warning de depreciação do fillna(method=)
+        def extract_series(column_data):
+            """Extrai uma Series de uma coluna que pode ser multi-dimensional"""
+            if isinstance(column_data, pd.DataFrame):
+                # Se for DataFrame, pegar a primeira coluna
+                series_data = column_data.iloc[:, 0]
+            else:
+                series_data = column_data
+            return series_data.squeeze()
+        
+        close_prices = extract_series(df['Close']).ffill().bfill()
+        volume = extract_series(df['Volume']).fillna(0)
+        high_prices = extract_series(df['High']).ffill().bfill()
+        low_prices = extract_series(df['Low']).ffill().bfill()
+        
+        # Verificar se temos dados suficientes
+        if len(close_prices) < 21:  # Precisamos de pelo menos 21 dados para SMA_21
+            st.error(f"❌ Dados insuficientes para calcular indicadores. Necessário: 21, disponível: {len(close_prices)}")
+            return None
+        
+        # Calcular indicadores com tratamento de erro individual
+        try:
+            # Médias Móveis
+            df['SMA_7'] = ta.trend.sma_indicator(close_prices, window=7)
+            df['SMA_21'] = ta.trend.sma_indicator(close_prices, window=21)
+            df['EMA_9'] = ta.trend.ema_indicator(close_prices, window=9)
+        except Exception as e:
+            st.error(f"❌ Erro ao calcular médias móveis: {str(e)}")
+            return None
+        
+        try:
+            # RSI
+            df['RSI'] = ta.momentum.rsi(close_prices, window=14)
+        except Exception as e:
+            st.error(f"❌ Erro ao calcular RSI: {str(e)}")
+            return None
+        
+        try:
+            # MACD
+            macd = ta.trend.MACD(close_prices)
+            df['MACD'] = macd.macd()
+            df['MACD_signal'] = macd.macd_signal()
+        except Exception as e:
+            st.error(f"❌ Erro ao calcular MACD: {str(e)}")
+            return None
+        
+        try:
+            # Bollinger Bands
+            bollinger = ta.volatility.BollingerBands(close_prices)
+            df['BB_upper'] = bollinger.bollinger_hband()
+            df['BB_lower'] = bollinger.bollinger_lband()
+            df['BB_width'] = df['BB_upper'] - df['BB_lower']
+        except Exception as e:
+            st.error(f"❌ Erro ao calcular Bollinger Bands: {str(e)}")
+            return None
+        
+        try:
+            # Volume indicators - CORREÇÃO PRINCIPAL
+            volume_sma = ta.trend.sma_indicator(volume, window=10)
+            
+            # Garantir que volume_sma seja uma Series e tratar divisão por zero
+            if isinstance(volume_sma, pd.DataFrame):
+                volume_sma = volume_sma.iloc[:, 0]
+            
+            df['Volume_SMA'] = volume_sma
+            
+            # Calcular Volume_ratio de forma segura
+            volume_ratio = volume / volume_sma.replace(0, np.nan)
+            df['Volume_ratio'] = volume_ratio
+            
+        except Exception as e:
+            st.error(f"❌ Erro ao calcular indicadores de volume: {str(e)}")
+            return None
+        
+        try:
+            # Price features
+            df['High_Low_pct'] = (high_prices - low_prices) / close_prices * 100
+            df['Price_change'] = close_prices.pct_change()
+        except Exception as e:
+            st.error(f"❌ Erro ao calcular features de preço: {str(e)}")
+            return None
+        
+        # Remover NaN values
+        initial_length = len(df)
+        df.dropna(inplace=True)
+        final_length = len(df)
+        
+        if final_length == 0:
+            st.error("❌ Todos os dados foram removidos após calcular indicadores técnicos")
+            return None
+        
+        if final_length < initial_length * 0.5:  # Se perdemos mais de 50% dos dados
+            st.warning(f"⚠️ Muitos dados foram removidos após calcular indicadores: {initial_length} → {final_length}")
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"❌ Erro geral ao calcular indicadores técnicos: {str(e)}")
+        return None
 
 @st.cache_data
 def carregar_dados_ticker(ticker, periodo='1y'):
-    """Carrega dados do ticker com cache"""
+    """Carrega dados do ticker com cache e melhor tratamento de erro"""
     try:
-        dados = yf.download(ticker, period=periodo, progress=False)
-        dados = dados.reset_index()
-        dados.set_index('Date', inplace=True)
-        return adicionar_indicadores_tecnicos(dados)
-    except:
+        # Verificar se o ticker é válido
+        if not ticker or not isinstance(ticker, str):
+            st.error(f"❌ Ticker inválido: {ticker}")
+            return None
+        
+        # Log para debug
+        st.info(f"🔄 Baixando dados para {ticker} (período: {periodo})...")
+        
+        # Download dos dados com timeout
+        dados = yf.download(
+            ticker, 
+            period=periodo, 
+            progress=False,
+            timeout=30,
+            threads=True,
+            auto_adjust=False
+        )
+        
+        # Verificar se dados foram baixados
+        if dados is None or dados.empty:
+            st.error(f"❌ Nenhum dado encontrado para {ticker}. Verifique se o ticker está correto.")
+            return None
+        
+        # Verificar estrutura dos dados
+        required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        missing_columns = [col for col in required_columns if col not in dados.columns]
+        if missing_columns:
+            st.error(f"❌ Colunas obrigatórias ausentes: {missing_columns}")
+            return None
+        
+        # Verificar se há dados suficientes
+        if len(dados) < 50:
+            st.error(f"❌ Dados insuficientes para {ticker}. Apenas {len(dados)} registros encontrados. Mínimo: 50")
+            return None
+        
+        st.success(f"✅ {len(dados)} registros baixados com sucesso para {ticker}")
+        
+        # Processar dados
+        if not isinstance(dados.index, pd.DatetimeIndex):
+            dados = dados.reset_index()
+            if 'Date' in dados.columns:
+                dados.set_index('Date', inplace=True)
+            elif 'Datetime' in dados.columns:
+                dados.set_index('Datetime', inplace=True)
+            else:
+                st.error("❌ Coluna de data não encontrada nos dados")
+                return None
+        
+        # Adicionar indicadores técnicos
+        st.info("📊 Calculando indicadores técnicos...")
+        dados_com_indicadores = adicionar_indicadores_tecnicos(dados)
+        
+        # Verificar se indicadores foram calculados
+        if dados_com_indicadores is None or dados_com_indicadores.empty:
+            st.error("❌ Erro ao calcular indicadores técnicos")
+            return None
+        
+        # Verificar se ainda temos dados suficientes após calcular indicadores
+        if len(dados_com_indicadores) < 30:
+            st.error(f"❌ Dados insuficientes após calcular indicadores: {len(dados_com_indicadores)} registros")
+            return None
+        
+        st.success(f"✅ Indicadores técnicos calculados. {len(dados_com_indicadores)} registros finais")
+        return dados_com_indicadores
+        
+    except Exception as e:
+        error_msg = f"❌ Erro ao carregar dados para {ticker}: {str(e)}"
+        st.error(error_msg)
+        
+        # Sugestões de solução baseadas no tipo de erro
+        if "timeout" in str(e).lower():
+            st.warning("💡 Dica: Problema de conectividade. Tente novamente em alguns segundos.")
+        elif "delisted" in str(e).lower() or "not found" in str(e).lower():
+            st.warning("💡 Dica: Ticker pode estar incorreto ou a ação pode ter sido deslistada.")
+        elif "rate limit" in str(e).lower():
+            st.warning("💡 Dica: Muitas requisições. Aguarde alguns minutos antes de tentar novamente.")
+        else:
+            st.warning("💡 Dica: Verifique sua conexão com a internet e tente novamente.")
+        
+        # Log detalhado do erro para debug
+        st.error(f"Detalhes técnicos: {type(e).__name__}: {str(e)}")
         return None
 
 def configurar_gemini(api_key):
@@ -216,11 +391,11 @@ def gerar_insight_async(model, prompt, insight_type):
 def iniciar_geracao_insights(model, ticker, dados, metricas):
     """Inicia geração de insights em threads separadas"""
 
-    # Preparar dados para os prompts
-    preco_atual = dados['Close'].iloc[-1]
-    variacao_mes = ((dados['Close'].iloc[-1] / dados['Close'].iloc[-30]) - 1) * 100 if len(dados) > 30 else 0
-    rsi_atual = dados['RSI'].iloc[-1]
-    volume_medio = dados['Volume'].mean()
+    # Preparar dados para os prompts - CORREÇÃO: extrair valores escalares
+    preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1:])
+    variacao_mes = ((extrair_valor_escalar(dados['Close'].iloc[-1:]) / extrair_valor_escalar(dados['Close'].iloc[-30:-29])) - 1) * 100 if len(dados) > 30 else 0
+    rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1:])
+    volume_medio = extrair_valor_escalar(dados['Volume'].mean())
 
     prompts = {
         'analise_tecnica': f"""
@@ -237,9 +412,9 @@ def iniciar_geracao_insights(model, ticker, dados, metricas):
         'tendencia': f"""
         Analise a tendência da ação {ticker} com base nos seguintes dados:
         - Preço atual: R$ {preco_atual:.2f}
-        - Média móvel 7 dias: R$ {dados['SMA_7'].iloc[-1]:.2f}
-        - Média móvel 21 dias: R$ {dados['SMA_21'].iloc[-1]:.2f}
-        - MACD: {dados['MACD'].iloc[-1]:.4f}
+        - Média móvel 7 dias: R$ {extrair_valor_escalar(dados['SMA_7'].iloc[-1:]):.2f}
+        - Média móvel 21 dias: R$ {extrair_valor_escalar(dados['SMA_21'].iloc[-1:]):.2f}
+        - MACD: {extrair_valor_escalar(dados['MACD'].iloc[-1:]):.4f}
 
         Identifique se a tendência é de alta 📈, baixa 📉 ou lateral ➡️.
         Justifique sua análise em 2-3 linhas de forma clara e objetiva.
@@ -247,9 +422,9 @@ def iniciar_geracao_insights(model, ticker, dados, metricas):
 
         'risco': f"""
         Avalie o nível de risco da ação {ticker} considerando:
-        - Volatilidade (desvio padrão): {dados['Close'].pct_change().std() * 100:.2f}%
+        - Volatilidade (desvio padrão): {extrair_valor_escalar(dados['Close'].pct_change().std() * 100):.2f}%
         - R² do modelo de previsão: {metricas.get('r2', 0):.4f}
-        - Largura das Bandas de Bollinger: {dados['BB_width'].iloc[-1]:.2f}
+        - Largura das Bandas de Bollinger: {extrair_valor_escalar(dados['BB_width'].iloc[-1:]):.2f}
 
         Classifique o risco como:
         🟢 Baixo (volatilidade < 2%)
@@ -263,8 +438,8 @@ def iniciar_geracao_insights(model, ticker, dados, metricas):
         Com base na análise da ação {ticker}:
         - Preço atual: R$ {preco_atual:.2f}
         - RSI: {rsi_atual:.2f}
-        - Volume em relação à média: {dados['Volume_ratio'].iloc[-1]:.2f}x
-        - Tendência das médias móveis: {"Alta" if dados['SMA_7'].iloc[-1] > dados['SMA_21'].iloc[-1] else "Baixa"}
+        - Volume em relação à média: {extrair_valor_escalar(dados['Volume_ratio'].iloc[-1:]):.2f}x
+        - Tendência das médias móveis: {"Alta" if extrair_valor_escalar(dados['SMA_7'].iloc[-1:]) > extrair_valor_escalar(dados['SMA_21'].iloc[-1:]) else "Baixa"}
 
         Forneça uma sugestão estratégica (não é recomendação de investimento):
         💰 Momento de acumulação
@@ -281,6 +456,32 @@ def iniciar_geracao_insights(model, ticker, dados, metricas):
         t = threading.Thread(target=gerar_insight_async, args=(model, prompt, tipo))
         t.start()
         threads.append(t)
+
+def testar_conectividade_yahoo():
+    """Testa a conectividade com o Yahoo Finance usando um ticker confiável"""
+    try:
+        # Usar um ticker americano muito estável para teste
+        ticker_teste = "AAPL"
+        st.info(f"🔄 Testando conectividade com Yahoo Finance usando {ticker_teste}...")
+        
+        dados_teste = yf.download(
+            ticker_teste, 
+            period="5d", 
+            progress=False,
+            timeout=10,
+            auto_adjust=False
+        )
+        
+        if dados_teste is not None and not dados_teste.empty and len(dados_teste) > 0:
+            st.success("✅ Conectividade com Yahoo Finance OK!")
+            return True
+        else:
+            st.error("❌ Yahoo Finance não retornou dados válidos")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Erro de conectividade com Yahoo Finance: {str(e)}")
+        return False
 
 # Interface principal
 st.markdown('<h1 class="dashboard-header">📈 StockAI Predictor - Previsão Inteligente de Ações</h1>', unsafe_allow_html=True)
@@ -331,6 +532,37 @@ with st.sidebar:
     else:
         st.error("❌ Modelo não encontrado")
         st.warning("Execute a célula de treinamento primeiro!")
+    
+    st.markdown("---")
+    
+    # Seção de diagnóstico
+    st.markdown("### 🔧 Diagnóstico")
+    if st.button("🌐 Testar Conectividade", use_container_width=True):
+        testar_conectividade_yahoo()
+    
+    # Botão para limpar cache
+    if st.button("🗑️ Limpar Cache", use_container_width=True):
+        st.cache_data.clear()
+        st.success("✅ Cache limpo! Atualize a página.")
+    
+    st.markdown("---")
+    
+    # Informações de ajuda
+    with st.expander("❓ Problemas Comuns"):
+        st.markdown("""
+        **Não consegue carregar dados?**
+        - Verifique sua conexão com a internet
+        - Teste a conectividade usando o botão acima
+        - Tente outro ticker ou período menor
+        
+        **Dados muito antigos?**
+        - Limpe o cache usando o botão acima
+        - Atualize a página (F5)
+        
+        **Erro de modelo?**
+        - Execute primeiro o treinamento.py
+        - Verifique se os arquivos foram salvos corretamente
+        """)
 
 # Configurar modelo Gemini se a API key foi fornecida
 if GOOGLE_API_KEY and not st.session_state.model_configured:
@@ -346,7 +578,8 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
     with st.spinner('Carregando dados...'):
         dados = carregar_dados_ticker(ticker_selecionado, periodo)
         try:
-            modelo = load_model(f'models/{ticker_selecionado}_model.h5')
+            # CORREÇÃO: Carregando modelo sem compilar para evitar erro de desserialização
+            modelo = load_model(f'models/{ticker_selecionado}_model.h5', compile=False)
             scaler = joblib.load(f'scalers/{ticker_selecionado}_scaler.pkl')
             metricas = joblib.load(f'metrics/{ticker_selecionado}_metrics.pkl')
         except Exception as e:
@@ -361,8 +594,9 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
             # Métricas principais
             col1, col2, col3, col4 = st.columns(4)
 
-            preco_atual = dados['Close'].iloc[-1]
-            preco_anterior = dados['Close'].iloc[-2]
+            # CORREÇÃO: Extrair valores escalares de forma segura
+            preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1:])
+            preco_anterior = extrair_valor_escalar(dados['Close'].iloc[-2:-1])
             variacao_diaria = ((preco_atual - preco_anterior) / preco_anterior) * 100
 
             with col1:
@@ -373,22 +607,22 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
                 st.markdown('</div>', unsafe_allow_html=True)
 
             with col2:
-                volume_atual = dados['Volume'].iloc[-1]
-                volume_medio = dados['Volume'].mean()
+                volume_atual = extrair_valor_escalar(dados['Volume'].iloc[-1:])
+                volume_medio = extrair_valor_escalar(dados['Volume'].mean())
                 st.markdown('<div class="metric-card">', unsafe_allow_html=True)
                 st.metric("📊 Volume", f"{volume_atual:,.0f}",
                          f"{((volume_atual/volume_medio - 1) * 100):+.1f}% vs média")
                 st.markdown('</div>', unsafe_allow_html=True)
 
             with col3:
-                rsi = dados['RSI'].iloc[-1]
+                rsi = extrair_valor_escalar(dados['RSI'].iloc[-1:])
                 st.markdown('<div class="metric-card">', unsafe_allow_html=True)
                 st.metric("📈 RSI", f"{rsi:.2f}",
                          "Sobrecomprado" if rsi > 70 else "Sobrevendido" if rsi < 30 else "Neutro")
                 st.markdown('</div>', unsafe_allow_html=True)
 
             with col4:
-                volatilidade = dados['Close'].pct_change().std() * 100
+                volatilidade = extrair_valor_escalar(dados['Close'].pct_change().std() * 100)
                 st.markdown('<div class="metric-card">', unsafe_allow_html=True)
                 st.metric("📊 Volatilidade", f"{volatilidade:.2f}%",
                          "Alta" if volatilidade > 3 else "Baixa")
@@ -442,8 +676,11 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
             )
 
             # Volume
-            colors = ['#26a69a' if dados['Close'].iloc[i] >= dados['Open'].iloc[i]
-                     else '#ef5350' for i in range(len(dados))]
+            colors = []
+            for i in range(len(dados)):
+                close_val = extrair_valor_escalar(dados['Close'].iloc[i:i+1])
+                open_val = extrair_valor_escalar(dados['Open'].iloc[i:i+1])
+                colors.append('#26a69a' if close_val >= open_val else '#ef5350')
 
             fig.add_trace(
                 go.Bar(
@@ -517,7 +754,7 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
                     st.metric("📉 Erro Médio (MAE)", f"R$ {metricas['mae']:.2f}")
 
                 with col3:
-                    risco_score = min(100, (metricas['rmse'] / preco_atual) * 100)
+                    risco_score = min(100, (metricas['rmse'] / extrair_valor_escalar(preco_atual)) * 100)
                     st.metric("⚠️ Nível de Risco", f"{risco_score:.1f}%")
 
                 # Gráfico de previsão
@@ -541,7 +778,7 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
                 # Previsão
                 fig_prev.add_trace(go.Scatter(
                     x=[ultimos_30_dias.index[-1], datas[0]],
-                    y=[preco_atual, previsao_real],
+                    y=[extrair_valor_escalar(preco_atual), previsao_real],
                     mode='lines+markers',
                     name='Previsão',
                     line=dict(color='#4CAF50', width=3, dash='dash'),
@@ -632,21 +869,21 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
 
             with col1:
                 st.markdown("#### 📊 Médias Móveis")
-                st.metric("SMA 7", f"R$ {dados['SMA_7'].iloc[-1]:.2f}")
-                st.metric("SMA 21", f"R$ {dados['SMA_21'].iloc[-1]:.2f}")
-                st.metric("EMA 9", f"R$ {dados['EMA_9'].iloc[-1]:.2f}")
+                st.metric("SMA 7", f"R$ {extrair_valor_escalar(dados['SMA_7'].iloc[-1:]):.2f}")
+                st.metric("SMA 21", f"R$ {extrair_valor_escalar(dados['SMA_21'].iloc[-1:]):.2f}")
+                st.metric("EMA 9", f"R$ {extrair_valor_escalar(dados['EMA_9'].iloc[-1:]):.2f}")
 
             with col2:
                 st.markdown("#### 📈 Momentum")
-                st.metric("RSI (14)", f"{dados['RSI'].iloc[-1]:.2f}")
-                st.metric("MACD", f"{dados['MACD'].iloc[-1]:.4f}")
-                st.metric("MACD Signal", f"{dados['MACD_signal'].iloc[-1]:.4f}")
+                st.metric("RSI (14)", f"{extrair_valor_escalar(dados['RSI'].iloc[-1:]):.2f}")
+                st.metric("MACD", f"{extrair_valor_escalar(dados['MACD'].iloc[-1:]):.4f}")
+                st.metric("MACD Signal", f"{extrair_valor_escalar(dados['MACD_signal'].iloc[-1:]):.4f}")
 
             with col3:
                 st.markdown("#### 📉 Volatilidade")
-                st.metric("Bollinger Superior", f"R$ {dados['BB_upper'].iloc[-1]:.2f}")
-                st.metric("Bollinger Inferior", f"R$ {dados['BB_lower'].iloc[-1]:.2f}")
-                st.metric("Largura BB", f"{dados['BB_width'].iloc[-1]:.2f}")
+                st.metric("Bollinger Superior", f"R$ {extrair_valor_escalar(dados['BB_upper'].iloc[-1:]):.2f}")
+                st.metric("Bollinger Inferior", f"R$ {extrair_valor_escalar(dados['BB_lower'].iloc[-1:]):.2f}")
+                st.metric("Largura BB", f"{extrair_valor_escalar(dados['BB_width'].iloc[-1:]):.2f}")
 
             # Gráficos de indicadores
             st.markdown("### 📊 Visualização de Indicadores")
@@ -692,7 +929,10 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
 
             # Histograma MACD
             macd_hist = dados['MACD'] - dados['MACD_signal']
-            colors = ['#26a69a' if val >= 0 else '#ef5350' for val in macd_hist]
+            colors = []
+            for val in macd_hist:
+                val_escalar = extrair_valor_escalar(val) if hasattr(val, 'iloc') else float(val)
+                colors.append('#26a69a' if val_escalar >= 0 else '#ef5350')
 
             fig_macd.add_trace(go.Bar(
                 x=dados.index,
