@@ -27,22 +27,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS customizado para design moderno
+# CSS customizado para design moderno e claro
 st.markdown("""
 <style>
-    /* Tema escuro moderno */
+    /* Tema claro moderno */
     .stApp {
-        background-color: #0e1117;
+        background-color: #ffffff;
+        color: #2c3e50;
     }
 
-    /* Cards customizados */
+    /* Cards customizados - tema claro */
     .metric-card {
-        background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%);
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
         padding: 1.5rem;
-        border-radius: 10px;
-        border: 1px solid #333;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        border-radius: 15px;
+        border: 1px solid #dee2e6;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         margin-bottom: 1rem;
+        color: #2c3e50;
     }
 
     /* Títulos estilizados */
@@ -65,11 +67,12 @@ st.markdown("""
         border-radius: 25px;
         font-weight: bold;
         transition: all 0.3s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     }
 
     .stButton > button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
     }
 
     /* Métricas destacadas */
@@ -79,13 +82,40 @@ st.markdown("""
         color: #4CAF50;
     }
 
-    /* Cards de insight */
+    /* Cards de insight - tema claro */
     .insight-card {
-        background: linear-gradient(135deg, #1a237e 0%, #3949ab 100%);
+        background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
         padding: 1.5rem;
         border-radius: 15px;
         margin: 1rem 0;
-        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        color: #1565c0;
+        border: 1px solid #90caf9;
+    }
+
+    /* Sidebar styling */
+    .css-1d391kg {
+        background-color: #f8f9fa;
+    }
+
+    /* Ajustar texto da sidebar */
+    .css-1d391kg .stMarkdown {
+        color: #2c3e50;
+    }
+
+    /* Métricas do Streamlit */
+    [data-testid="metric-container"] {
+        background-color: #ffffff;
+        border: 1px solid #dee2e6;
+        border-radius: 10px;
+        padding: 1rem;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    }
+
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        background-color: #f8f9fa;
+        border-radius: 10px;
     }
 
     /* Animação de loading */
@@ -97,6 +127,21 @@ st.markdown("""
         0% { opacity: 0.6; }
         50% { opacity: 1; }
         100% { opacity: 0.6; }
+    }
+
+    /* Ajustar cores dos warnings e erros */
+    .stAlert > div {
+        border-radius: 10px;
+    }
+
+    /* Tabs styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 10px 10px 0 0;
+        padding: 0.5rem 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -693,7 +738,7 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
             )
 
             fig.update_layout(
-                template="plotly_dark",
+                template="plotly_white",
                 height=600,
                 showlegend=True,
                 xaxis_rangeslider_visible=False,
@@ -786,7 +831,7 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
                 ))
 
                 fig_prev.update_layout(
-                    template="plotly_dark",
+                    template="plotly_white",
                     height=400,
                     title="Últimos 30 dias + Previsão",
                     xaxis_title="Data",
@@ -902,7 +947,7 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
             fig_rsi.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="Sobrevendido")
 
             fig_rsi.update_layout(
-                template="plotly_dark",
+                template="plotly_white",
                 height=300,
                 title="RSI (14)",
                 yaxis_title="RSI",
@@ -942,7 +987,7 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'
             ))
 
             fig_macd.update_layout(
-                template="plotly_dark",
+                template="plotly_white",
                 height=300,
                 title="MACD",
                 yaxis_title="Valor",
