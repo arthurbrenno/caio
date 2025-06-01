@@ -15,7 +15,31 @@ import joblib
 import os
 from datetime import datetime, timedelta
 import warnings
+import gc  # Garbage collection for memory management
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 warnings.filterwarnings('ignore')
+
+# Configure TensorFlow for better memory usage
+try:
+    # For GPU users - limit memory growth
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logger.info(f"✅ GPU configurado: {len(gpus)} GPU(s) disponível(is)")
+    else:
+        logger.info("💻 Usando CPU para treinamento")
+except Exception as e:
+    logger.warning(f"⚠️ Configuração de GPU falhou: {e}")
+
+# Set random seeds for reproducibility
+np.random.seed(42)
+tf.random.set_seed(42)
 
 # === Configuração Aprimorada ===
 TICKERS = {
@@ -216,17 +240,14 @@ def criar_modelo_attention_lstm(input_shape, output_steps=1):
     lstm2 = BatchNormalization()(lstm2)
     lstm2 = Dropout(0.3)(lstm2)
     
-    # Attention mechanism simplificado
-    # Usando Dense layer como attention
-    attention_weights = Dense(1, activation='tanh')(lstm2)
-    attention_weights = Flatten()(attention_weights)
-    attention_weights = tf.keras.layers.Activation('softmax')(attention_weights)
-    attention_weights = tf.keras.layers.RepeatVector(lstm2.shape[2])(attention_weights)
-    attention_weights = tf.keras.layers.Permute([2, 1])(attention_weights)
-    
-    # Aplicar attention
-    attention_applied = tf.keras.layers.Multiply()([lstm2, attention_weights])
-    attention_output = tf.keras.layers.Lambda(lambda x: tf.keras.backend.sum(x, axis=1))(attention_applied)
+    # Attention mechanism melhorado
+    try:
+        # Usar GlobalAveragePooling1D como alternativa mais simples e estável
+        attention_output = tf.keras.layers.GlobalAveragePooling1D()(lstm2)
+    except Exception:
+        # Fallback para flatten se GlobalAveragePooling1D falhar
+        attention_output = Flatten()(lstm2)
+        attention_output = Dense(128, activation='relu')(attention_output)
     
     # Dense layers
     dense1 = Dense(64, activation='relu', kernel_regularizer=l1_l2(l1=0.01, l2=0.01))(attention_output)
@@ -379,7 +400,7 @@ def treinar_modelo_ticker_avancado(ticker, nome_ticker):
                 modelo = criar_modelo_lstm_simplificado((X_train.shape[1], X_train.shape[2]))
             
             # Callbacks avançados
-            checkpoint_path = f'checkpoints/{ticker}_{scaler_name}_best.h5'
+            checkpoint_path = f'checkpoints/{ticker}_{scaler_name}_best.keras'
             callbacks = [
                 EarlyStopping(monitor='val_loss', patience=20, restore_best_weights=True, mode='min'),
                 ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=10, min_lr=0.00001, mode='min'),
@@ -461,7 +482,7 @@ def treinar_modelo_ticker_avancado(ticker, nome_ticker):
         
         # Salvar melhor modelo
         print("💾 Salvando melhor modelo...")
-        best_results['model'].save(f'models/{ticker}_advanced_model.h5')
+        best_results['model'].save(f'models/{ticker}_advanced_model.keras')
         joblib.dump(best_results['scaler_obj'], f'scalers/{ticker}_advanced_scaler.pkl')
         
         # Salvar métricas detalhadas
@@ -581,7 +602,7 @@ def fazer_previsao_ensemble(ticker, dias_futuros=5):
         
         # Carregar scaler e modelo
         scaler = joblib.load(f'scalers/{ticker}_advanced_scaler.pkl')
-        modelo = tf.keras.models.load_model(f'models/{ticker}_advanced_model.h5')
+        modelo = tf.keras.models.load_model(f'models/{ticker}_advanced_model.keras')
         
         # Preparar features
         metricas = joblib.load(f'metrics/{ticker}_advanced_metrics.pkl')
@@ -619,21 +640,126 @@ def fazer_previsao_ensemble(ticker, dias_futuros=5):
         print(f"Erro na previsão: {str(e)}")
         return None, None
 
+def verificar_modelos_existentes():
+    """Verifica se já existem modelos treinados e seus desempenhos"""
+    modelos_existentes = {}
+    
+    for ticker in TICKERS.keys():
+        modelo_path = f'models/{ticker}_advanced_model.keras'
+        metrics_path = f'metrics/{ticker}_advanced_metrics.pkl'
+        
+        if os.path.exists(modelo_path) and os.path.exists(metrics_path):
+            try:
+                metrics = joblib.load(metrics_path)
+                modelos_existentes[ticker] = {
+                    'r2': metrics.get('r2', 0),
+                    'mape': metrics.get('mape', 100),
+                    'direction_accuracy': metrics.get('direction_accuracy', 0),
+                    'data_treino': metrics.get('data_treino', 'Desconhecido')
+                }
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao carregar métricas de {ticker}: {e}")
+    
+    return modelos_existentes
+
+def deve_retreinar_modelo(ticker, threshold_r2=0.7, threshold_days=30):
+    """Decide se um modelo deve ser retreinado baseado na performance e idade"""
+    modelos_existentes = verificar_modelos_existentes()
+    
+    if ticker not in modelos_existentes:
+        return True, "Modelo não existe"
+    
+    metrics = modelos_existentes[ticker]
+    
+    # Verificar performance
+    if metrics['r2'] < threshold_r2:
+        return True, f"R² baixo: {metrics['r2']:.4f} < {threshold_r2}"
+    
+    # Verificar idade do modelo
+    try:
+        data_treino = datetime.strptime(metrics['data_treino'], '%Y-%m-%d %H:%M:%S')
+        dias_desde_treino = (datetime.now() - data_treino).days
+        if dias_desde_treino > threshold_days:
+            return True, f"Modelo antigo: {dias_desde_treino} dias"
+    except Exception:
+        return True, "Data de treino inválida"
+    
+    return False, f"Modelo atual OK (R²: {metrics['r2']:.4f})"
+
 # === Executar Treinamento Avançado ===
 print("🚀 INICIANDO TREINAMENTO AVANÇADO DOS MODELOS")
 print(f"📅 Data: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"📊 Total de tickers: {len(TICKERS)}")
 print("\n⚡ Este processo usa técnicas avançadas e pode demorar mais tempo...")
 
-resultados = []
+# Verificar modelos existentes
+print("\n🔍 Verificando modelos existentes...")
+modelos_existentes = verificar_modelos_existentes()
+
+if modelos_existentes:
+    print(f"✅ Encontrados {len(modelos_existentes)} modelos existentes:")
+    for ticker, metrics in modelos_existentes.items():
+        print(f"   {ticker}: R² = {metrics['r2']:.4f}, Treino: {metrics['data_treino']}")
+
+# Determinar quais modelos treinar
+modelos_para_treinar = []
+modelos_pulados = []
+
 for ticker, nome in TICKERS.items():
-    resultado = treinar_modelo_ticker_avancado(ticker, nome)
-    if resultado:
-        resultados.append(resultado)
+    deve_treinar, motivo = deve_retreinar_modelo(ticker)
+    if deve_treinar:
+        modelos_para_treinar.append((ticker, nome, motivo))
+    else:
+        modelos_pulados.append((ticker, nome, motivo))
+
+if modelos_pulados:
+    print(f"\n⏭️ Pulando {len(modelos_pulados)} modelos que já estão bons:")
+    for ticker, nome, motivo in modelos_pulados:
+        print(f"   {nome} ({ticker}): {motivo}")
+
+if not modelos_para_treinar:
+    print("\n✅ Todos os modelos estão atualizados e com boa performance!")
+    print("💡 Use force_retrain=True se quiser retreinar todos os modelos")
+else:
+    print(f"\n🔄 Treinando {len(modelos_para_treinar)} modelo(s):")
+    for ticker, nome, motivo in modelos_para_treinar:
+        print(f"   {nome} ({ticker}): {motivo}")
+
+resultados = []
+total_modelos = len(modelos_para_treinar)
+
+for i, (ticker, nome, motivo) in enumerate(modelos_para_treinar, 1):
+    print(f"\n📊 Progresso: {i}/{total_modelos} modelos")
+    print(f"🎯 Motivo do retreino: {motivo}")
     
-    # Pequena pausa entre tickers para não sobrecarregar a API
-    import time
-    time.sleep(2)
+    try:
+        resultado = treinar_modelo_ticker_avancado(ticker, nome)
+        if resultado:
+            resultados.append(resultado)
+            logger.info(f"✅ Modelo {ticker} treinado com sucesso")
+        else:
+            logger.warning(f"⚠️ Falha ao treinar modelo {ticker}")
+        
+        # Limpeza de memória entre modelos
+        gc.collect()
+        tf.keras.backend.clear_session()
+        
+        # Pequena pausa entre tickers para não sobrecarregar a API
+        import time
+        time.sleep(2)
+        
+    except Exception as e:
+        logger.error(f"❌ Erro crítico ao treinar {ticker}: {str(e)}")
+        continue
+
+# Adicionar modelos existentes que não foram retreinados aos resultados
+for ticker, nome in modelos_pulados:
+    try:
+        metrics_path = f'metrics/{ticker}_advanced_metrics.pkl'
+        metrics = joblib.load(metrics_path)
+        resultados.append(metrics)
+    except Exception as e:
+        logger.warning(f"⚠️ Erro ao carregar métricas de {ticker}: {e}")
 
 # === Resumo Final Detalhado ===
 print("\n" + "="*80)

@@ -564,9 +564,9 @@ with st.sidebar:
     st.markdown("---")
 
     # Informações do modelo
-    if os.path.exists(f'models/{ticker_selecionado}_model.h5'):
+    if os.path.exists(f'models/{ticker_selecionado}_advanced_model.keras'):
         try:
-            metricas = joblib.load(f'metrics/{ticker_selecionado}_metrics.pkl')
+            metricas = joblib.load(f'metrics/{ticker_selecionado}_advanced_metrics.pkl')
             st.markdown("### 🤖 Modelo Treinado")
             st.success(f"✅ Modelo disponível")
             st.info(f"📅 Treinado em: {metricas['data_treino']}")
@@ -617,16 +617,16 @@ if GOOGLE_API_KEY and not st.session_state.model_configured:
         st.session_state.gemini_model = model
 
 # Layout principal
-if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_model.h5'):
+if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_advanced_model.keras'):
 
     # Carregar dados e modelo
     with st.spinner('Carregando dados...'):
         dados = carregar_dados_ticker(ticker_selecionado, periodo)
         try:
             # CORREÇÃO: Carregando modelo sem compilar para evitar erro de desserialização
-            modelo = load_model(f'models/{ticker_selecionado}_model.h5', compile=False)
-            scaler = joblib.load(f'scalers/{ticker_selecionado}_scaler.pkl')
-            metricas = joblib.load(f'metrics/{ticker_selecionado}_metrics.pkl')
+            modelo = load_model(f'models/{ticker_selecionado}_advanced_model.keras', compile=False)
+            scaler = joblib.load(f'scalers/{ticker_selecionado}_advanced_scaler.pkl')
+            metricas = joblib.load(f'metrics/{ticker_selecionado}_advanced_metrics.pkl')
         except Exception as e:
             st.error(f"Erro ao carregar modelo: {str(e)}")
             st.stop()
