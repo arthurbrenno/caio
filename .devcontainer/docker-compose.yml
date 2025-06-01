@@ -1,6 +1,6 @@
 services:
-  agentle:
-    container_name: agentle
+  tcc-caio:
+    container_name: tcc-caio
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile

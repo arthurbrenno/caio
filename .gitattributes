@@ -1,0 +1,36 @@
+# Gitatributes 
+
+* text=auto eol=lf
+*.{cmd,[cC][mM][dD]} text eol=crlf
+*.{bat,[bB][aA][tT]} text eol=crlf
+
+# Source files
+# ============
+*.pxd    text diff=python
+*.py     text diff=python
+*.py3    text diff=python
+*.pyw    text diff=python
+*.pyx    text diff=python
+*.pyz    text diff=python
+*.pyi    text diff=python
+
+# Binary files
+# ============
+*.db     binary
+*.p      binary
+*.pkl    binary
+*.pickle binary
+*.pyc    binary export-ignore
+*.pyo    binary export-ignore
+*.pyd    binary
+
+# Jupyter notebook
+*.ipynb  text eol=lf
+* linguist-vendored
+*.js linguist-vendored=false
+*.css linguist-vendored=false
+*.json linguist-vendored=false
+*.md linguist-vendored=false
+*.txt linguist-vendored=false
+*.yaml linguist-vendored=false
+*.py linguist-vendored=false
