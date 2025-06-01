@@ -161,6 +161,142 @@ GOOGLE_API_KEY = st.sidebar.text_input(
     help="Insira sua chave da API do Google para usar IA generativa"
 )
 
+# === Adicionar configurações do treinamento ===
+MARKET_INDICES = {
+    '^BVSP': 'Ibovespa',
+    '^DJI': 'Dow Jones',
+    'CL=F': 'Petróleo WTI',
+    'BRL=X': 'USD/BRL'
+}
+
+# === Função para coletar dados de mercado (igual ao treinamento) ===
+def coletar_dados_mercado(inicio, fim):
+    """Coleta dados dos índices de mercado para usar como features adicionais"""
+    market_data = {}
+    valid_data = []
+    
+    for symbol, name in MARKET_INDICES.items():
+        try:
+            data = yf.download(symbol, start=inicio, end=fim, progress=False)
+            if len(data) > 0 and 'Close' in data.columns:
+                # Flatten multi-level columns if they exist
+                if isinstance(data.columns, pd.MultiIndex):
+                    data.columns = [col[0] if isinstance(col, tuple) else col for col in data.columns]
+                
+                # Criar DataFrame temporário com os dados deste símbolo
+                temp_df = pd.DataFrame(index=data.index)
+                temp_df[f'{name}_Close'] = data['Close']
+                temp_df[f'{name}_Return'] = data['Close'].pct_change()
+                
+                valid_data.append(temp_df)
+                print(f"✅ Dados de {name} coletados")
+        except Exception as e:
+            print(f"⚠️ Erro ao coletar {name}: {e}")
+    
+    # Se temos dados válidos, concatenar todos
+    if valid_data:
+        result_df = valid_data[0]
+        for df in valid_data[1:]:
+            result_df = result_df.join(df, how='outer')
+        return result_df
+    else:
+        # Retornar DataFrame vazio se não conseguimos coletar nenhum dado
+        print("⚠️ Nenhum dado de mercado foi coletado")
+        return pd.DataFrame()
+
+# === Função para adicionar indicadores técnicos compatível com treinamento ===
+def adicionar_indicadores_tecnicos_completos(df):
+    """Adiciona indicadores técnicos compatíveis com o modelo treinado"""
+    try:
+        if df is None or df.empty:
+            return None
+        
+        df = df.copy()
+        
+        # Verificar colunas necessárias
+        required_columns = ['Close', 'Volume', 'High', 'Low', 'Open']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            st.error(f"❌ Colunas obrigatórias ausentes: {missing_columns}")
+            return None
+        
+        # Extrair séries
+        def extract_series(column_data):
+            if isinstance(column_data, pd.DataFrame):
+                series_data = column_data.iloc[:, 0]
+            else:
+                series_data = column_data
+            return series_data.squeeze()
+        
+        close = extract_series(df['Close']).ffill().bfill()
+        high = extract_series(df['High']).ffill().bfill()
+        low = extract_series(df['Low']).ffill().bfill()
+        volume = extract_series(df['Volume']).fillna(0)
+        open_price = extract_series(df['Open']).ffill().bfill()
+        
+        if len(close) < 30:
+            st.error(f"❌ Dados insuficientes para calcular indicadores: {len(close)}")
+            return None
+        
+        # Médias móveis essenciais (compatível com treinamento)
+        df['SMA_5'] = ta.trend.sma_indicator(close, window=5)
+        df['SMA_20'] = ta.trend.sma_indicator(close, window=20)
+        df['EMA_9'] = ta.trend.ema_indicator(close, window=9)
+        df['EMA_21'] = ta.trend.ema_indicator(close, window=21)
+        
+        # Razões de médias móveis
+        df['SMA_ratio'] = df['SMA_5'] / df['SMA_20'].replace(0, np.nan)
+        df['Price_to_SMA20'] = close / df['SMA_20'].replace(0, np.nan)
+        
+        # RSI
+        df['RSI'] = ta.momentum.rsi(close, window=14)
+        
+        # MACD
+        macd = ta.trend.MACD(close)
+        df['MACD_diff'] = macd.macd_diff()
+        
+        # Bollinger Bands
+        bb = ta.volatility.BollingerBands(close, window=20)
+        df['BB_width'] = (bb.bollinger_hband() - bb.bollinger_lband()) / close.replace(0, np.nan)
+        df['BB_position'] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband()).replace(0, np.nan)
+        
+        # Volume indicators
+        volume_sma = ta.trend.sma_indicator(volume, window=20)
+        df['Volume_ratio'] = volume / volume_sma.replace(0, np.nan)
+        df['OBV'] = ta.volume.on_balance_volume(close, volume)
+        df['OBV_EMA'] = ta.trend.ema_indicator(df['OBV'], window=20)
+        
+        # Volatilidade
+        df['ATR'] = ta.volatility.average_true_range(high, low, close, window=14)
+        df['Volatility'] = close.pct_change().rolling(20).std()
+        
+        # Returns
+        df['Return_1'] = close.pct_change(1)
+        df['Return_5'] = close.pct_change(5)
+        df['Return_20'] = close.pct_change(20)
+        
+        # Price patterns
+        df['HL_ratio'] = (high - low) / close.replace(0, np.nan)
+        df['CO_ratio'] = (close - open_price) / open_price.replace(0, np.nan)
+        
+        # Trend indicators
+        df['Trend_20'] = (close - close.shift(20)) / close.shift(20).replace(0, np.nan)
+        df['Above_SMA20'] = (close > df['SMA_20']).astype(int)
+        
+        # Manter indicadores originais para compatibilidade com UI
+        df['SMA_7'] = ta.trend.sma_indicator(close, window=7)
+        df['SMA_21'] = df['SMA_20']  # Alias
+        df['MACD'] = macd.macd()
+        df['MACD_signal'] = macd.macd_signal()
+        df['BB_upper'] = bb.bollinger_hband()
+        df['BB_lower'] = bb.bollinger_lband()
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao calcular indicadores técnicos: {str(e)}")
+        return None
+
 # Funções auxiliares
 def extrair_valor_escalar(series_ou_df):
     """Extrai um valor escalar de uma Series ou DataFrame de forma robusta"""
@@ -313,10 +449,28 @@ def carregar_dados_ticker(ticker, periodo='1y'):
         # Log para debug
         st.info(f"🔄 Baixando dados para {ticker} (período: {periodo})...")
         
-        # Download dos dados com timeout
+        # Calcular datas
+        fim = datetime.now()
+        if periodo == '1mo':
+            inicio = fim - timedelta(days=30)
+        elif periodo == '3mo':
+            inicio = fim - timedelta(days=90)
+        elif periodo == '6mo':
+            inicio = fim - timedelta(days=180)
+        elif periodo == '1y':
+            inicio = fim - timedelta(days=365)
+        elif periodo == '2y':
+            inicio = fim - timedelta(days=730)
+        elif periodo == '5y':
+            inicio = fim - timedelta(days=1825)
+        else:
+            inicio = fim - timedelta(days=365)
+        
+        # Download dos dados do ticker
         dados = yf.download(
             ticker, 
-            period=periodo, 
+            start=inicio,
+            end=fim,
             progress=False,
             timeout=30,
             threads=True,
@@ -327,6 +481,10 @@ def carregar_dados_ticker(ticker, periodo='1y'):
         if dados is None or dados.empty:
             st.error(f"❌ Nenhum dado encontrado para {ticker}. Verifique se o ticker está correto.")
             return None
+        
+        # Flatten multi-level columns if they exist
+        if isinstance(dados.columns, pd.MultiIndex):
+            dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
         
         # Verificar estrutura dos dados
         required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
@@ -342,6 +500,17 @@ def carregar_dados_ticker(ticker, periodo='1y'):
         
         st.success(f"✅ {len(dados)} registros baixados com sucesso para {ticker}")
         
+        # Coletar dados de mercado
+        st.info("📈 Coletando dados de mercado correlacionados...")
+        dados_mercado = coletar_dados_mercado(inicio, fim)
+        
+        # Alinhar índices e juntar dados
+        if len(dados_mercado) > 0:
+            dados = dados.join(dados_mercado, how='left')
+            st.info(f"✅ Dados de mercado adicionados: {list(dados_mercado.columns)}")
+        else:
+            st.warning("⚠️ Não foi possível coletar dados de mercado. Usando apenas dados do ticker.")
+        
         # Processar dados
         if not isinstance(dados.index, pd.DatetimeIndex):
             dados = dados.reset_index()
@@ -355,7 +524,7 @@ def carregar_dados_ticker(ticker, periodo='1y'):
         
         # Adicionar indicadores técnicos
         st.info("📊 Calculando indicadores técnicos...")
-        dados_com_indicadores = adicionar_indicadores_tecnicos(dados)
+        dados_com_indicadores = adicionar_indicadores_tecnicos_completos(dados)
         
         # Verificar se indicadores foram calculados
         if dados_com_indicadores is None or dados_com_indicadores.empty:
@@ -366,6 +535,10 @@ def carregar_dados_ticker(ticker, periodo='1y'):
         if len(dados_com_indicadores) < 30:
             st.error(f"❌ Dados insuficientes após calcular indicadores: {len(dados_com_indicadores)} registros")
             return None
+        
+        # Preencher valores faltantes
+        dados_com_indicadores.ffill(inplace=True)
+        dados_com_indicadores.dropna(inplace=True)
         
         st.success(f"✅ Indicadores técnicos calculados. {len(dados_com_indicadores)} registros finais")
         return dados_com_indicadores
@@ -386,6 +559,76 @@ def carregar_dados_ticker(ticker, periodo='1y'):
         
         # Log detalhado do erro para debug
         st.error(f"Detalhes técnicos: {type(e).__name__}: {str(e)}")
+        return None
+
+def preparar_dados_para_previsao(dados, metricas):
+    """Prepara dados para previsão, aplicando a mesma lógica do treinamento"""
+    try:
+        # Recriar a lógica de separação de features do treinamento
+        # Target (Close) deve ser separado das features
+        target_col = 'Close'
+        
+        # Features são todas as colunas EXCETO as colunas de preço básicas
+        feature_cols = [col for col in dados.columns if col not in ['Close', 'Open', 'High', 'Low', 'Adj Close']]
+        
+        st.info(f"📊 Total de features disponíveis: {len(feature_cols)}")
+        
+        # Verificar quais features existem nos dados
+        features_disponiveis = [f for f in feature_cols if f in dados.columns]
+        features_faltantes = [f for f in feature_cols if f not in dados.columns]
+        
+        if features_faltantes:
+            st.warning(f"⚠️ Features faltantes: {len(features_faltantes)} de {len(feature_cols)}")
+            
+            # Criar features faltantes com valores padrão
+            for feature in features_faltantes:
+                if 'Close' in feature or 'Return' in feature:
+                    dados[feature] = dados['Close'].ffill()
+                elif 'Volume' in feature:
+                    dados[feature] = dados['Volume'].ffill()
+                else:
+                    dados[feature] = 0.0
+        
+        # Garantir que todas as features estão presentes
+        dados_features = dados[feature_cols].copy()
+        
+        # Preencher valores NaN restantes
+        dados_features.ffill(inplace=True)
+        dados_features.fillna(0, inplace=True)
+        
+        # Aplicar seleção de features importantes se disponível
+        if 'important_indices' in metricas and 'selected_features' in metricas:
+            important_indices = metricas['important_indices']
+            selected_features = metricas['selected_features']
+            
+            st.info(f"🎯 Usando {len(selected_features)} features selecionadas durante o treinamento")
+            
+            # Verificar se as features selecionadas existem
+            features_selecionadas_disponiveis = [f for f in selected_features if f in dados_features.columns]
+            
+            if len(features_selecionadas_disponiveis) < len(selected_features):
+                st.warning(f"⚠️ Algumas features selecionadas estão faltando. Usando {len(features_selecionadas_disponiveis)} de {len(selected_features)}")
+                
+                # Preencher features selecionadas faltantes
+                for feature in selected_features:
+                    if feature not in dados_features.columns:
+                        dados_features[feature] = 0.0
+            
+            # Usar apenas as features selecionadas, na ordem correta
+            try:
+                dados_features_finais = dados_features[selected_features]
+                st.success(f"✅ Features preparadas: {dados_features_finais.shape}")
+                return dados_features_finais.values
+            except KeyError as e:
+                st.error(f"❌ Erro ao selecionar features: {str(e)}")
+                # Fallback: usar todas as features disponíveis
+                return dados_features.values
+        else:
+            st.warning("⚠️ Informações de seleção de features não encontradas. Usando todas as features.")
+            return dados_features.values
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao preparar dados para previsão: {str(e)}")
         return None
 
 def configurar_gemini(api_key):
@@ -436,71 +679,76 @@ def gerar_insight_async(model, prompt, insight_type):
 def iniciar_geracao_insights(model, ticker, dados, metricas):
     """Inicia geração de insights em threads separadas"""
 
-    # Preparar dados para os prompts - CORREÇÃO: extrair valores escalares
-    preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1:])
-    variacao_mes = ((extrair_valor_escalar(dados['Close'].iloc[-1:]) / extrair_valor_escalar(dados['Close'].iloc[-30:-29])) - 1) * 100 if len(dados) > 30 else 0
-    rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1:])
-    volume_medio = extrair_valor_escalar(dados['Volume'].mean())
+    try:
+        # Preparar dados para os prompts - CORREÇÃO: extrair valores escalares
+        preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1:])
+        variacao_mes = ((extrair_valor_escalar(dados['Close'].iloc[-1:]) / extrair_valor_escalar(dados['Close'].iloc[-30:-29])) - 1) * 100 if len(dados) > 30 else 0
+        rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1:]) if 'RSI' in dados.columns else 50
+        volume_medio = extrair_valor_escalar(dados['Volume'].mean())
 
-    prompts = {
-        'analise_tecnica': f"""
-        Como analista financeiro especializado, analise os seguintes indicadores técnicos da ação {ticker}:
-        - Preço atual: R$ {preco_atual:.2f}
-        - RSI: {rsi_atual:.2f}
-        - Variação mensal: {variacao_mes:.2f}%
-        - Volume médio: {volume_medio:.0f}
+        prompts = {
+            'analise_tecnica': f"""
+            Como analista financeiro especializado, analise os seguintes indicadores técnicos da ação {ticker}:
+            - Preço atual: R$ {preco_atual:.2f}
+            - RSI: {rsi_atual:.2f}
+            - Variação mensal: {variacao_mes:.2f}%
+            - Volume médio: {volume_medio:.0f}
 
-        Forneça uma análise técnica concisa em 3-4 linhas, destacando se a ação está sobrecomprada, sobrevendida ou em equilíbrio.
-        Use emojis para tornar a leitura mais agradável.
-        """,
+            Forneça uma análise técnica concisa em 3-4 linhas, destacando se a ação está sobrecomprada, sobrevendida ou em equilíbrio.
+            Use emojis para tornar a leitura mais agradável.
+            """,
 
-        'tendencia': f"""
-        Analise a tendência da ação {ticker} com base nos seguintes dados:
-        - Preço atual: R$ {preco_atual:.2f}
-        - Média móvel 7 dias: R$ {extrair_valor_escalar(dados['SMA_7'].iloc[-1:]):.2f}
-        - Média móvel 21 dias: R$ {extrair_valor_escalar(dados['SMA_21'].iloc[-1:]):.2f}
-        - MACD: {extrair_valor_escalar(dados['MACD'].iloc[-1:]):.4f}
+            'tendencia': f"""
+            Analise a tendência da ação {ticker} com base nos seguintes dados:
+            - Preço atual: R$ {preco_atual:.2f}
+            - Média móvel 7 dias: R$ {extrair_valor_escalar(dados['SMA_7'].iloc[-1:]) if 'SMA_7' in dados.columns else preco_atual:.2f}
+            - Média móvel 21 dias: R$ {extrair_valor_escalar(dados['SMA_21'].iloc[-1:]) if 'SMA_21' in dados.columns else preco_atual:.2f}
+            - MACD: {extrair_valor_escalar(dados['MACD'].iloc[-1:]) if 'MACD' in dados.columns else 0:.4f}
 
-        Identifique se a tendência é de alta 📈, baixa 📉 ou lateral ➡️.
-        Justifique sua análise em 2-3 linhas de forma clara e objetiva.
-        """,
+            Identifique se a tendência é de alta 📈, baixa 📉 ou lateral ➡️.
+            Justifique sua análise em 2-3 linhas de forma clara e objetiva.
+            """,
 
-        'risco': f"""
-        Avalie o nível de risco da ação {ticker} considerando:
-        - Volatilidade (desvio padrão): {extrair_valor_escalar(dados['Close'].pct_change().std() * 100):.2f}%
-        - R² do modelo de previsão: {metricas.get('r2', 0):.4f}
-        - Largura das Bandas de Bollinger: {extrair_valor_escalar(dados['BB_width'].iloc[-1:]):.2f}
+            'risco': f"""
+            Avalie o nível de risco da ação {ticker} considerando:
+            - Volatilidade (desvio padrão): {extrair_valor_escalar(dados['Close'].pct_change().std() * 100):.2f}%
+            - R² do modelo de previsão: {metricas.get('r2', 0):.4f}
+            - Largura das Bandas de Bollinger: {extrair_valor_escalar(dados['BB_width'].iloc[-1:]) if 'BB_width' in dados.columns else 0:.2f}
 
-        Classifique o risco como:
-        🟢 Baixo (volatilidade < 2%)
-        🟡 Médio (volatilidade 2-4%)
-        🔴 Alto (volatilidade > 4%)
+            Classifique o risco como:
+            🟢 Baixo (volatilidade < 2%)
+            🟡 Médio (volatilidade 2-4%)
+            🔴 Alto (volatilidade > 4%)
 
-        Explique sua classificação em 2-3 linhas.
-        """,
+            Explique sua classificação em 2-3 linhas.
+            """,
 
-        'recomendacao': f"""
-        Com base na análise da ação {ticker}:
-        - Preço atual: R$ {preco_atual:.2f}
-        - RSI: {rsi_atual:.2f}
-        - Volume em relação à média: {extrair_valor_escalar(dados['Volume_ratio'].iloc[-1:]):.2f}x
-        - Tendência das médias móveis: {"Alta" if extrair_valor_escalar(dados['SMA_7'].iloc[-1:]) > extrair_valor_escalar(dados['SMA_21'].iloc[-1:]) else "Baixa"}
+            'recomendacao': f"""
+            Com base na análise da ação {ticker}:
+            - Preço atual: R$ {preco_atual:.2f}
+            - RSI: {rsi_atual:.2f}
+            - Volume em relação à média: {extrair_valor_escalar(dados['Volume_ratio'].iloc[-1:]) if 'Volume_ratio' in dados.columns else 1:.2f}x
+            - Tendência das médias móveis: {"Alta" if 'SMA_7' in dados.columns and 'SMA_21' in dados.columns and extrair_valor_escalar(dados['SMA_7'].iloc[-1:]) > extrair_valor_escalar(dados['SMA_21'].iloc[-1:]) else "Lateral"}
 
-        Forneça uma sugestão estratégica (não é recomendação de investimento):
-        💰 Momento de acumulação
-        ⏸️ Aguardar melhor momento
-        📊 Realizar lucros
+            Forneça uma sugestão estratégica (não é recomendação de investimento):
+            💰 Momento de acumulação
+            ⏸️ Aguardar melhor momento
+            📊 Realizar lucros
 
-        Justifique em 3-4 linhas e sempre mencione que isso não é conselho financeiro.
-        """
-    }
+            Justifique em 3-4 linhas e sempre mencione que isso não é conselho financeiro.
+            """
+        }
 
-    # Criar threads para cada insight
-    threads = []
-    for tipo, prompt in prompts.items():
-        t = threading.Thread(target=gerar_insight_async, args=(model, prompt, tipo))
-        t.start()
-        threads.append(t)
+        # Criar threads para cada insight
+        threads = []
+        for tipo, prompt in prompts.items():
+            t = threading.Thread(target=gerar_insight_async, args=(model, prompt, tipo))
+            t.start()
+            threads.append(t)
+    
+    except Exception as e:
+        st.error(f"❌ Erro ao preparar insights: {str(e)}")
+        st.session_state.insights_queue.put(("erro", f"Erro na geração de insights: {str(e)}"))
 
 def testar_conectividade_yahoo():
     """Testa a conectividade com o Yahoo Finance usando um ticker confiável"""
@@ -527,6 +775,32 @@ def testar_conectividade_yahoo():
     except Exception as e:
         st.error(f"❌ Erro de conectividade com Yahoo Finance: {str(e)}")
         return False
+
+def carregar_modelo_seguro(ticker):
+    """Carrega modelo, scaler e métricas de forma segura"""
+    try:
+        # Verificar se arquivos existem
+        model_path = f'models/{ticker}_advanced_model.keras'
+        scaler_path = f'scalers/{ticker}_advanced_scaler.pkl'
+        metrics_path = f'metrics/{ticker}_advanced_metrics.pkl'
+        
+        if not all(os.path.exists(path) for path in [model_path, scaler_path, metrics_path]):
+            return None, None, None, "Arquivos do modelo não encontrados"
+        
+        # Carregar métricas primeiro
+        metricas = joblib.load(metrics_path)
+        
+        # Carregar scaler
+        scaler = joblib.load(scaler_path)
+        
+        # Carregar modelo (sem compilar para evitar erros de compatibilidade)
+        modelo = load_model(model_path, compile=False)
+        
+        return modelo, scaler, metricas, None
+        
+    except Exception as e:
+        error_msg = f"Erro ao carregar modelo: {str(e)}"
+        return None, None, None, error_msg
 
 # Interface principal
 st.markdown('<h1 class="dashboard-header">📈 StockAI Predictor - Previsão Inteligente de Ações</h1>', unsafe_allow_html=True)
@@ -622,13 +896,14 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_advanced_
     # Carregar dados e modelo
     with st.spinner('Carregando dados...'):
         dados = carregar_dados_ticker(ticker_selecionado, periodo)
-        try:
-            # CORREÇÃO: Carregando modelo sem compilar para evitar erro de desserialização
-            modelo = load_model(f'models/{ticker_selecionado}_advanced_model.keras', compile=False)
-            scaler = joblib.load(f'scalers/{ticker_selecionado}_advanced_scaler.pkl')
-            metricas = joblib.load(f'metrics/{ticker_selecionado}_advanced_metrics.pkl')
-        except Exception as e:
-            st.error(f"Erro ao carregar modelo: {str(e)}")
+        modelo, scaler, metricas, error_msg = carregar_modelo_seguro(ticker_selecionado)
+        
+        if error_msg:
+            st.error(error_msg)
+            st.stop()
+        
+        if modelo is None or scaler is None or metricas is None:
+            st.error("❌ Erro ao carregar componentes do modelo")
             st.stop()
 
     if dados is not None and len(dados) > 0:
@@ -756,90 +1031,127 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_advanced_
 
             # Pegar últimos dados
             if len(dados) >= janela:
-                ultimos_dados = dados[features].iloc[-janela:].values
-                ultimos_dados_norm = scaler.transform(ultimos_dados)
-
-                # Fazer previsão
-                X_pred = ultimos_dados_norm.reshape(1, janela, len(features))
-                previsao_norm = modelo.predict(X_pred, verbose=0)
-
-                # Desnormalizar
-                previsao_completa = np.zeros((1, len(features)))
-                previsao_completa[0, 0] = previsao_norm[0, 0]
-                previsao_real = scaler.inverse_transform(previsao_completa)[0, 0]
-
-                # Calcular variação prevista
-                variacao_prevista = ((previsao_real - preco_atual) / preco_atual) * 100
-
-                # Display da previsão
-                col1, col2, col3 = st.columns([1, 2, 1])
-
-                with col2:
-                    st.markdown('<div class="metric-card" style="text-align: center;">', unsafe_allow_html=True)
-                    st.markdown(f'<h2 class="big-metric">R$ {previsao_real:.2f}</h2>', unsafe_allow_html=True)
-                    st.markdown(f"<h4>Variação Prevista: {variacao_prevista:+.2f}%</h4>", unsafe_allow_html=True)
-
-                    if variacao_prevista > 0:
-                        st.success(f"📈 Tendência de ALTA")
+                # Usar a nova função para preparar dados
+                ultimos_dados_preparados = preparar_dados_para_previsao(dados, metricas)
+                
+                if ultimos_dados_preparados is not None:
+                    ultimos_dados = ultimos_dados_preparados[-janela:]
+                    
+                    # Obter informações sobre features e scaler
+                    num_selected_features = len(metricas.get('selected_features', []))
+                    total_scaler_features = len(metricas.get('features', [])) - 1  # -1 para excluir Close
+                    
+                    st.info(f"📊 Dados preparados: {ultimos_dados.shape}")
+                    st.info(f"🎯 Features selecionadas: {num_selected_features}")
+                    
+                    # O scaler foi treinado com [feature_cols + [target_col]]
+                    # Precisamos criar um array com zeros para as features não selecionadas + target
+                    dados_para_scaler = np.zeros((ultimos_dados.shape[0], total_scaler_features + 1))
+                    
+                    # Se temos informações sobre features selecionadas, mapeá-las para posições corretas
+                    if 'selected_features' in metricas and 'important_indices' in metricas:
+                        # Mapear features selecionadas para suas posições originais
+                        important_indices = metricas['important_indices']
+                        for i, idx in enumerate(important_indices):
+                            if i < ultimos_dados.shape[1] and idx < total_scaler_features:
+                                dados_para_scaler[:, idx] = ultimos_dados[:, i]
                     else:
-                        st.error(f"📉 Tendência de BAIXA")
+                        # Fallback: usar as primeiras features disponíveis
+                        n_features = min(ultimos_dados.shape[1], total_scaler_features)
+                        dados_para_scaler[:, :n_features] = ultimos_dados[:, :n_features]
+                    
+                    # Escalar os dados (incluindo posição do target como zero)
+                    ultimos_dados_norm = scaler.transform(dados_para_scaler)
+                    
+                    # Extrair apenas as features selecionadas para o modelo
+                    if 'important_indices' in metricas:
+                        features_for_model = ultimos_dados_norm[:, metricas['important_indices']]
+                    else:
+                        features_for_model = ultimos_dados_norm[:, :-1]  # Excluir target
+                    
+                    # Fazer previsão
+                    X_pred = features_for_model.reshape(1, janela, features_for_model.shape[1])
+                    previsao_norm = modelo.predict(X_pred, verbose=0)
 
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    # Desnormalizar - criar array completo e colocar previsão na posição do target
+                    previsao_completa = np.zeros((1, total_scaler_features + 1))
+                    previsao_completa[0, -1] = previsao_norm[0, 0]  # Target (Close) é a última posição
+                    previsao_real = scaler.inverse_transform(previsao_completa)[0, -1]
 
-                # Confiança do modelo
-                st.markdown("### 📊 Confiança da Previsão")
+                    # Calcular variação prevista
+                    variacao_prevista = ((previsao_real - preco_atual) / preco_atual) * 100
 
-                col1, col2, col3 = st.columns(3)
+                    # Display da previsão
+                    col1, col2, col3 = st.columns([1, 2, 1])
 
-                with col1:
-                    confianca_r2 = metricas['r2'] * 100
-                    st.metric("🎯 Precisão Histórica", f"{confianca_r2:.1f}%")
+                    with col2:
+                        st.markdown('<div class="metric-card" style="text-align: center;">', unsafe_allow_html=True)
+                        st.markdown(f'<h2 class="big-metric">R$ {previsao_real:.2f}</h2>', unsafe_allow_html=True)
+                        st.markdown(f"<h4>Variação Prevista: {variacao_prevista:+.2f}%</h4>", unsafe_allow_html=True)
 
-                with col2:
-                    st.metric("📉 Erro Médio (MAE)", f"R$ {metricas['mae']:.2f}")
+                        if variacao_prevista > 0:
+                            st.success(f"📈 Tendência de ALTA")
+                        else:
+                            st.error(f"📉 Tendência de BAIXA")
 
-                with col3:
-                    risco_score = min(100, (metricas['rmse'] / extrair_valor_escalar(preco_atual)) * 100)
-                    st.metric("⚠️ Nível de Risco", f"{risco_score:.1f}%")
+                        st.markdown('</div>', unsafe_allow_html=True)
 
-                # Gráfico de previsão
-                st.markdown("### 📈 Visualização da Previsão")
+                    # Confiança do modelo
+                    st.markdown("### 📊 Confiança da Previsão")
 
-                # Últimos 30 dias + previsão
-                ultimos_30_dias = dados['Close'].iloc[-30:].copy()
-                datas = pd.date_range(start=ultimos_30_dias.index[-1] + timedelta(days=1), periods=1)
+                    col1, col2, col3 = st.columns(3)
 
-                fig_prev = go.Figure()
+                    with col1:
+                        confianca_r2 = metricas['r2'] * 100
+                        st.metric("🎯 Precisão Histórica", f"{confianca_r2:.1f}%")
 
-                # Histórico
-                fig_prev.add_trace(go.Scatter(
-                    x=ultimos_30_dias.index,
-                    y=ultimos_30_dias.values,
-                    mode='lines',
-                    name='Histórico',
-                    line=dict(color='#2196F3', width=3)
-                ))
+                    with col2:
+                        st.metric("📉 Erro Médio (MAE)", f"R$ {metricas['mae']:.2f}")
 
-                # Previsão
-                fig_prev.add_trace(go.Scatter(
-                    x=[ultimos_30_dias.index[-1], datas[0]],
-                    y=[extrair_valor_escalar(preco_atual), previsao_real],
-                    mode='lines+markers',
-                    name='Previsão',
-                    line=dict(color='#4CAF50', width=3, dash='dash'),
-                    marker=dict(size=10)
-                ))
+                    with col3:
+                        risco_score = min(100, (metricas['rmse'] / extrair_valor_escalar(preco_atual)) * 100)
+                        st.metric("⚠️ Nível de Risco", f"{risco_score:.1f}%")
 
-                fig_prev.update_layout(
-                    template="plotly_white",
-                    height=400,
-                    title="Últimos 30 dias + Previsão",
-                    xaxis_title="Data",
-                    yaxis_title="Preço (R$)",
-                    showlegend=True
-                )
+                    # Gráfico de previsão
+                    st.markdown("### 📈 Visualização da Previsão")
 
-                st.plotly_chart(fig_prev, use_container_width=True)
+                    # Últimos 30 dias + previsão
+                    ultimos_30_dias = dados['Close'].iloc[-30:].copy()
+                    datas = pd.date_range(start=ultimos_30_dias.index[-1] + timedelta(days=1), periods=1)
+
+                    fig_prev = go.Figure()
+
+                    # Histórico
+                    fig_prev.add_trace(go.Scatter(
+                        x=ultimos_30_dias.index,
+                        y=ultimos_30_dias.values,
+                        mode='lines',
+                        name='Histórico',
+                        line=dict(color='#2196F3', width=3)
+                    ))
+
+                    # Previsão
+                    fig_prev.add_trace(go.Scatter(
+                        x=[ultimos_30_dias.index[-1], datas[0]],
+                        y=[extrair_valor_escalar(preco_atual), previsao_real],
+                        mode='lines+markers',
+                        name='Previsão',
+                        line=dict(color='#4CAF50', width=3, dash='dash'),
+                        marker=dict(size=10)
+                    ))
+
+                    fig_prev.update_layout(
+                        template="plotly_white",
+                        height=400,
+                        title="Últimos 30 dias + Previsão",
+                        xaxis_title="Data",
+                        yaxis_title="Preço (R$)",
+                        showlegend=True
+                    )
+
+                    st.plotly_chart(fig_prev, use_container_width=True)
+                else:
+                    st.error("❌ Erro ao preparar dados para previsão")
             else:
                 st.error(f"Dados insuficientes. Necessário pelo menos {janela} dias de histórico.")
 
