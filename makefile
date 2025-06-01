@@ -3,4 +3,4 @@
 DEFAULT_GOAL := run
 
 run:
-	streamlit run ui.py
+	uv run streamlit run ui.py
