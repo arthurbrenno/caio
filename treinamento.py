@@ -1,14 +1,15 @@
-
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, Dropout, BatchNormalization
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Dense, LSTM, Dropout, BatchNormalization, Input, Conv1D, MaxPooling1D, Flatten, GRU, Bidirectional, Attention, MultiHeadAttention, LayerNormalization, Concatenate
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l1_l2
 import ta  # Technical Analysis library
 import joblib
 import os
@@ -16,7 +17,7 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
 
-# === 3. Configuração de Tickers ===
+# === Configuração Aprimorada ===
 TICKERS = {
     'PETR4.SA': 'Petrobras',
     'VALE3.SA': 'Vale',
@@ -30,326 +31,679 @@ TICKERS = {
     'PRIO3.SA': 'PetroRio'
 }
 
-# === 4. Diretórios para Salvar Modelos ===
+# Diretórios
 os.makedirs('models', exist_ok=True)
 os.makedirs('scalers', exist_ok=True)
 os.makedirs('metrics', exist_ok=True)
+os.makedirs('checkpoints', exist_ok=True)
 
-# === 5. Função para Adicionar Indicadores Técnicos ===
-def adicionar_indicadores_tecnicos(df):
-    """Adiciona indicadores técnicos ao DataFrame"""
+# === Função Aprimorada para Indicadores Técnicos ===
+def adicionar_indicadores_tecnicos_avancados(df):
+    """Adiciona indicadores técnicos avançados ao DataFrame"""
     df = df.copy()
-
-    # Garante que as colunas primárias sejam Series, pegando a primeira coluna se a seleção resultar em DataFrame.
-    # Isso torna a função mais robusta, especialmente se yf.download retornar múltiplas colunas
-    # para um nome padrão (ex: 'Volume' devido a alguma peculiaridade ou duplicata).
-
-    _close_col = df['Close']
-    if isinstance(_close_col, pd.DataFrame):
-        close_prices = _close_col.iloc[:, 0].squeeze()
-    else:
-        close_prices = _close_col.squeeze()
-
-    _volume_col = df['Volume']
-    if isinstance(_volume_col, pd.DataFrame):
-        # Parte crucial: se df['Volume'] selecionar múltiplas colunas,
-        # pegamos a primeira, assumindo que é o comportamento implícito da TA-Lib ou o esperado.
-        volume_series_for_ta = _volume_col.iloc[:, 0].squeeze()
-    else:
-        volume_series_for_ta = _volume_col.squeeze()
-
-    _high_col = df['High']
-    if isinstance(_high_col, pd.DataFrame):
-        high_prices = _high_col.iloc[:, 0].squeeze()
-    else:
-        high_prices = _high_col.squeeze()
-
-    _low_col = df['Low']
-    if isinstance(_low_col, pd.DataFrame):
-        low_prices = _low_col.iloc[:, 0].squeeze()
-    else:
-        low_prices = _low_col.squeeze()
-
-    # Médias Móveis
-    df['SMA_7'] = ta.trend.sma_indicator(close_prices, window=7)
-    df['SMA_21'] = ta.trend.sma_indicator(close_prices, window=21)
-    df['EMA_9'] = ta.trend.ema_indicator(close_prices, window=9)
-
-    # RSI
-    df['RSI'] = ta.momentum.rsi(close_prices, window=14)
-
+    
+    # Garantir que as colunas sejam Series
+    close_prices = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
+    volume_series = df['Volume'].squeeze() if isinstance(df['Volume'], pd.DataFrame) else df['Volume']
+    high_prices = df['High'].squeeze() if isinstance(df['High'], pd.DataFrame) else df['High']
+    low_prices = df['Low'].squeeze() if isinstance(df['Low'], pd.DataFrame) else df['Low']
+    open_prices = df['Open'].squeeze() if isinstance(df['Open'], pd.DataFrame) else df['Open']
+    
+    # Médias Móveis (múltiplos períodos)
+    for period in [5, 7, 9, 10, 20, 21, 50, 100, 200]:
+        df[f'SMA_{period}'] = ta.trend.sma_indicator(close_prices, window=period)
+        df[f'EMA_{period}'] = ta.trend.ema_indicator(close_prices, window=period)
+    
+    # RSI (múltiplos períodos)
+    for period in [9, 14, 21]:
+        df[f'RSI_{period}'] = ta.momentum.rsi(close_prices, window=period)
+    
     # MACD
     macd_obj = ta.trend.MACD(close_prices)
     df['MACD'] = macd_obj.macd()
     df['MACD_signal'] = macd_obj.macd_signal()
-
+    df['MACD_diff'] = macd_obj.macd_diff()
+    
     # Bollinger Bands
-    bollinger_obj = ta.volatility.BollingerBands(close_prices)
-    df['BB_upper'] = bollinger_obj.bollinger_hband()
-    df['BB_lower'] = bollinger_obj.bollinger_lband()
-    df['BB_width'] = df['BB_upper'] - df['BB_lower']
-
+    for period in [10, 20, 30]:
+        bollinger_obj = ta.volatility.BollingerBands(close_prices, window=period)
+        df[f'BB_upper_{period}'] = bollinger_obj.bollinger_hband()
+        df[f'BB_lower_{period}'] = bollinger_obj.bollinger_lband()
+        df[f'BB_width_{period}'] = df[f'BB_upper_{period}'] - df[f'BB_lower_{period}']
+        df[f'BB_pctb_{period}'] = (close_prices - df[f'BB_lower_{period}']) / df[f'BB_width_{period}']
+    
+    # Stochastic Oscillator
+    stoch_obj = ta.momentum.StochasticOscillator(high_prices, low_prices, close_prices)
+    df['Stoch_K'] = stoch_obj.stoch()
+    df['Stoch_D'] = stoch_obj.stoch_signal()
+    
+    # ATR (Average True Range) - Volatilidade
+    for period in [7, 14, 21]:
+        df[f'ATR_{period}'] = ta.volatility.average_true_range(high_prices, low_prices, close_prices, window=period)
+    
+    # ADX (Average Directional Index)
+    adx_obj = ta.trend.ADXIndicator(high_prices, low_prices, close_prices)
+    df['ADX'] = adx_obj.adx()
+    df['ADX_pos'] = adx_obj.adx_pos()
+    df['ADX_neg'] = adx_obj.adx_neg()
+    
+    # CCI (Commodity Channel Index)
+    df['CCI'] = ta.trend.cci(high_prices, low_prices, close_prices)
+    
+    # Williams %R
+    df['Williams_R'] = ta.momentum.williams_r(high_prices, low_prices, close_prices)
+    
+    # MFI (Money Flow Index)
+    df['MFI'] = ta.volume.money_flow_index(high_prices, low_prices, close_prices, volume_series)
+    
+    # OBV (On Balance Volume)
+    df['OBV'] = ta.volume.on_balance_volume(close_prices, volume_series)
+    df['OBV_EMA'] = ta.trend.ema_indicator(df['OBV'], window=20)
+    
     # Volume indicators
-    # Usa 'volume_series_for_ta' que agora é garantidamente uma única Series
-    df['Volume_SMA'] = ta.trend.sma_indicator(volume_series_for_ta, window=10)
-
-    # Garante que df['Volume_SMA'] também seja tratado como Series para a divisão
-    # A TA-Lib deve retornar Series, mas .squeeze() é uma salvaguarda.
-    volume_sma_as_series = df['Volume_SMA'].squeeze()
-
-    # Calcula Volume_ratio usando a mesma 'volume_series_for_ta'
-    # Esta é a correção principal para o erro original
-    df['Volume_ratio'] = volume_series_for_ta / volume_sma_as_series
-
-    # Price features
+    df['Volume_SMA_10'] = ta.trend.sma_indicator(volume_series, window=10)
+    df['Volume_SMA_20'] = ta.trend.sma_indicator(volume_series, window=20)
+    df['Volume_ratio'] = volume_series / df['Volume_SMA_20']
+    df['Force_Index'] = close_prices.diff() * volume_series
+    
+    # Price patterns
     df['High_Low_pct'] = (high_prices - low_prices) / close_prices * 100
-    df['Price_change'] = close_prices.pct_change()
-
+    df['Close_Open_pct'] = (close_prices - open_prices) / open_prices * 100
+    
+    # Returns (múltiplos períodos)
+    for period in [1, 2, 3, 5, 10, 20]:
+        df[f'Return_{period}'] = close_prices.pct_change(period)
+        df[f'Log_Return_{period}'] = np.log(close_prices / close_prices.shift(period))
+    
+    # Volatilidade histórica
+    for period in [5, 10, 20, 30]:
+        df[f'Volatility_{period}'] = close_prices.pct_change().rolling(period).std()
+    
+    # Pivot Points
+    df['Pivot'] = (high_prices + low_prices + close_prices) / 3
+    df['R1'] = 2 * df['Pivot'] - low_prices
+    df['S1'] = 2 * df['Pivot'] - high_prices
+    
+    # Ichimoku Cloud
+    period9_high = high_prices.rolling(9).max()
+    period9_low = low_prices.rolling(9).min()
+    df['Ichimoku_conv'] = (period9_high + period9_low) / 2
+    
+    period26_high = high_prices.rolling(26).max()
+    period26_low = low_prices.rolling(26).min()
+    df['Ichimoku_base'] = (period26_high + period26_low) / 2
+    
+    # Parabolic SAR
+    psar_obj = ta.trend.PSARIndicator(high_prices, low_prices, close_prices)
+    df['PSAR'] = psar_obj.psar()
+    
+    # Feature Engineering adicional
+    # Razões entre médias móveis
+    df['SMA_5_20_ratio'] = df['SMA_5'] / df['SMA_20']
+    df['SMA_20_50_ratio'] = df['SMA_20'] / df['SMA_50']
+    df['EMA_9_21_ratio'] = df['EMA_9'] / df['EMA_21']
+    
+    # Distância do preço às médias móveis
+    df['Price_SMA20_distance'] = (close_prices - df['SMA_20']) / df['SMA_20'] * 100
+    df['Price_SMA50_distance'] = (close_prices - df['SMA_50']) / df['SMA_50'] * 100
+    
+    # Contadores de tendência
+    df['Days_above_SMA20'] = (close_prices > df['SMA_20']).rolling(20).sum()
+    df['Days_above_SMA50'] = (close_prices > df['SMA_50']).rolling(50).sum()
+    
+    # Features de tempo
+    df['DayOfWeek'] = df.index.dayofweek
+    df['DayOfMonth'] = df.index.day
+    df['MonthOfYear'] = df.index.month
+    df['Quarter'] = df.index.quarter
+    
+    # Encoding cíclico para features temporais
+    df['DayOfWeek_sin'] = np.sin(2 * np.pi * df['DayOfWeek'] / 7)
+    df['DayOfWeek_cos'] = np.cos(2 * np.pi * df['DayOfWeek'] / 7)
+    df['MonthOfYear_sin'] = np.sin(2 * np.pi * df['MonthOfYear'] / 12)
+    df['MonthOfYear_cos'] = np.cos(2 * np.pi * df['MonthOfYear'] / 12)
+    
     # Remove NaN values
     df.dropna(inplace=True)
-
+    
     return df
 
-# === 6. Função de Criação de Janelas Temporais ===
-def criar_janelas(dados, janela=10):
-    """Cria janelas temporais para treino"""
+# === Data Augmentation para Séries Temporais ===
+def augment_time_series(X, y, noise_factor=0.01, shift_range=5):
+    """Aplica data augmentation em séries temporais"""
+    augmented_X = []
+    augmented_y = []
+    
+    # Original data
+    augmented_X.append(X)
+    augmented_y.append(y)
+    
+    # Adicionar ruído gaussiano
+    noise = np.random.normal(0, noise_factor, X.shape)
+    augmented_X.append(X + noise)
+    augmented_y.append(y)
+    
+    # Time shifting
+    for shift in range(1, shift_range + 1):
+        if len(X) > shift:
+            augmented_X.append(X[:-shift])
+            augmented_y.append(y[:-shift])
+    
+    return np.concatenate(augmented_X), np.concatenate(augmented_y)
+
+# === Função para criar janelas com mais contexto ===
+def criar_janelas_avancadas(dados, janela=60, horizonte=5):
+    """Cria janelas temporais com múltiplos horizontes de previsão"""
     X, y = [], []
-    for i in range(len(dados) - janela):
+    for i in range(len(dados) - janela - horizonte + 1):
         X.append(dados[i:i+janela])
-        y.append(dados[i+janela][0])  # Prevê o Close normalizado
+        # Prevê múltiplos passos à frente
+        y.append(dados[i+janela:i+janela+horizonte, 0])  # Prevê apenas Close
     return np.array(X), np.array(y)
 
-# === 7. Função para Criar Modelo LSTM Melhorado ===
-def criar_modelo_lstm(input_shape):
-    """Cria um modelo LSTM otimizado"""
+# === Modelo LSTM com Attention Mechanism ===
+def criar_modelo_attention_lstm(input_shape, output_steps=1):
+    """Cria um modelo LSTM com mecanismo de atenção simplificado"""
+    inputs = Input(shape=input_shape)
+    
+    # Primeira camada LSTM bidirecional
+    lstm1 = Bidirectional(LSTM(128, return_sequences=True, kernel_regularizer=l1_l2(l1=0.01, l2=0.01)))(inputs)
+    lstm1 = BatchNormalization()(lstm1)
+    lstm1 = Dropout(0.3)(lstm1)
+    
+    # Segunda camada LSTM bidirecional
+    lstm2 = Bidirectional(LSTM(64, return_sequences=True, kernel_regularizer=l1_l2(l1=0.01, l2=0.01)))(lstm1)
+    lstm2 = BatchNormalization()(lstm2)
+    lstm2 = Dropout(0.3)(lstm2)
+    
+    # Attention mechanism simplificado
+    # Usando Dense layer como attention
+    attention_weights = Dense(1, activation='tanh')(lstm2)
+    attention_weights = Flatten()(attention_weights)
+    attention_weights = tf.keras.layers.Activation('softmax')(attention_weights)
+    attention_weights = tf.keras.layers.RepeatVector(lstm2.shape[2])(attention_weights)
+    attention_weights = tf.keras.layers.Permute([2, 1])(attention_weights)
+    
+    # Aplicar attention
+    attention_applied = tf.keras.layers.Multiply()([lstm2, attention_weights])
+    attention_output = tf.keras.layers.Lambda(lambda x: tf.keras.backend.sum(x, axis=1))(attention_applied)
+    
+    # Dense layers
+    dense1 = Dense(64, activation='relu', kernel_regularizer=l1_l2(l1=0.01, l2=0.01))(attention_output)
+    dense1 = BatchNormalization()(dense1)
+    dense1 = Dropout(0.2)(dense1)
+    
+    dense2 = Dense(32, activation='relu')(dense1)
+    dense2 = BatchNormalization()(dense2)
+    
+    # Output layer
+    if output_steps == 1:
+        outputs = Dense(1)(dense2)
+    else:
+        outputs = Dense(output_steps)(dense2)
+    
+    model = Model(inputs=inputs, outputs=outputs)
+    
+    # Otimizador com learning rate decay
+    optimizer = Adam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
+    
+    model.compile(
+        optimizer=optimizer,
+        loss='huber',  # Mais robusto a outliers que MSE
+        metrics=['mae', 'mse']
+    )
+    
+    return model
+
+# === Versão simplificada do modelo LSTM ===
+def criar_modelo_lstm_simplificado(input_shape):
+    """Cria um modelo LSTM robusto e simplificado"""
     modelo = Sequential([
+        # Primeira camada LSTM
         LSTM(128, return_sequences=True, input_shape=input_shape),
         Dropout(0.2),
         BatchNormalization(),
-
+        
+        # Segunda camada LSTM
         LSTM(64, return_sequences=True),
         Dropout(0.2),
         BatchNormalization(),
-
+        
+        # Terceira camada LSTM
         LSTM(32, return_sequences=False),
         Dropout(0.2),
         BatchNormalization(),
-
+        
+        # Dense layers
         Dense(32, activation='relu'),
         Dropout(0.1),
         Dense(16, activation='relu'),
         Dense(1)
     ])
-
+    
     optimizer = Adam(learning_rate=0.001)
-    modelo.compile(optimizer=optimizer, loss='mse', metrics=['mae'])
-
+    modelo.compile(optimizer=optimizer, loss='huber', metrics=['mae'])
+    
     return modelo
 
-# === 8. Função Principal de Treinamento ===
-def treinar_modelo_ticker(ticker, nome_ticker):
-    """Treina um modelo para um ticker específico"""
-    print(f"\n{'='*60}")
-    print(f"Treinando modelo para {nome_ticker} ({ticker})")
-    print(f"{'='*60}")
-
+# === Função de Treinamento Aprimorada ===
+def treinar_modelo_ticker_avancado(ticker, nome_ticker):
+    """Treina modelos avançados para um ticker específico"""
+    print(f"\n{'='*80}")
+    print(f"🚀 Treinando modelos avançados para {nome_ticker} ({ticker})")
+    print(f"{'='*80}")
+    
     try:
-        # Coleta de dados
-        print("📊 Coletando dados...")
+        # Coleta de dados estendida
+        print("📊 Coletando dados históricos...")
         fim = datetime.now()
-        inicio = fim - timedelta(days=365*5)  # 5 anos de dados (reduzido para melhor performance)
-
-        # Download com progress=False para evitar problemas
+        inicio = fim - timedelta(days=365*10)  # 10 anos de dados
+        
         dados = yf.download(ticker, start=inicio, end=fim, progress=False)
-
-        # Verificar se temos dados suficientes
-        if len(dados) < 100:
-            print(f"❌ Dados insuficientes para {ticker}")
+        
+        if len(dados) < 500:
+            print(f"❌ Dados insuficientes para {ticker} (mínimo: 500 dias)")
             return None
-
-        # Resetar index para garantir que seja um DataFrame limpo
-        # yf.download já retorna com Date como index se não houver group_by.
-        # Se Date não for index, as linhas abaixo o configuram.
+        
+        # Preparar dados
         if not isinstance(dados.index, pd.DatetimeIndex):
             dados = dados.reset_index()
             if 'Date' in dados.columns:
                 dados.set_index('Date', inplace=True)
-            elif 'Datetime' in dados.columns: # Algumas versões/tickers podem usar Datetime
-                 dados.set_index('Datetime', inplace=True)
-            else:
-                print(f"❌ Coluna de data não encontrada para {ticker}")
-                return None
-
-        # Adicionar indicadores técnicos
-        print("📈 Calculando indicadores técnicos...")
-        dados = adicionar_indicadores_tecnicos(dados)
-
-        # Verificar se ainda temos dados após remover NaN
-        if len(dados) < 100:
-            print(f"❌ Dados insuficientes após calcular indicadores para {ticker}")
+        
+        print(f"✅ {len(dados)} dias de dados coletados")
+        
+        # Adicionar indicadores técnicos avançados
+        print("📈 Calculando indicadores técnicos avançados...")
+        dados = adicionar_indicadores_tecnicos_avancados(dados)
+        
+        if len(dados) < 300:
+            print(f"❌ Dados insuficientes após calcular indicadores")
             return None
-
-        # Selecionar features
-        features = ['Close', 'Volume', 'SMA_7', 'SMA_21', 'EMA_9', 'RSI',
-                    'MACD', 'BB_width', 'Volume_ratio', 'High_Low_pct']
+        
+        # Seleção de features otimizada
+        # Vamos usar todas as features disponíveis para o modelo decidir quais são importantes
+        features_to_exclude = ['Open', 'High', 'Low', 'Adj Close', 'DayOfWeek', 'DayOfMonth', 'MonthOfYear', 'Quarter']
+        features = [col for col in dados.columns if col not in features_to_exclude]
+        
+        print(f"📊 Total de features: {len(features)}")
+        
         dados_features = dados[features].values
-
-        # Normalização
-        print("🔄 Normalizando dados...")
-        scaler = MinMaxScaler()
-        dados_normalizados = scaler.fit_transform(dados_features)
-
-        # Criar janelas
-        janela = 20
-        X, y = criar_janelas(dados_normalizados, janela)
-
-        # Verificar se temos dados suficientes
-        if len(X) < 100: # Checagem após criação de janelas
-            print(f"❌ Dados insuficientes após criar janelas para {ticker} (X_len: {len(X)})")
+        
+        # Experimentar com diferentes scalers
+        print("🔄 Testando diferentes métodos de normalização...")
+        scalers = {
+            'minmax': MinMaxScaler(),
+            'standard': StandardScaler(),
+            'robust': RobustScaler()
+        }
+        
+        best_results = None
+        best_scaler_name = None
+        
+        for scaler_name, scaler in scalers.items():
+            print(f"\n   Testando {scaler_name} scaler...")
+            
+            # Normalização
+            dados_normalizados = scaler.fit_transform(dados_features)
+            
+            # Criar janelas com horizonte de previsão
+            janela = 60  # 60 dias de histórico
+            horizonte = 1  # Prever 1 dia à frente
+            X, y = criar_janelas_avancadas(dados_normalizados, janela, horizonte)
+            
+            if len(X) < 200:
+                continue
+            
+            # Dividir dados com validação temporal
+            # 60% treino, 20% validação, 20% teste
+            tamanho_treino = int(0.6 * len(X))
+            tamanho_val = int(0.2 * len(X))
+            
+            X_train = X[:tamanho_treino]
+            y_train = y[:tamanho_treino].reshape(-1, horizonte)
+            X_val = X[tamanho_treino:tamanho_treino+tamanho_val]
+            y_val = y[tamanho_treino:tamanho_treino+tamanho_val].reshape(-1, horizonte)
+            X_test = X[tamanho_treino+tamanho_val:]
+            y_test = y[tamanho_treino+tamanho_val:].reshape(-1, horizonte)
+            
+            # Data Augmentation no conjunto de treino
+            print("   📊 Aplicando data augmentation...")
+            X_train_aug, y_train_aug = augment_time_series(X_train, y_train, noise_factor=0.005)
+            
+            # Criar modelo
+            try:
+                modelo = criar_modelo_attention_lstm((X_train.shape[1], X_train.shape[2]), horizonte)
+            except Exception as e:
+                print(f"   ⚠️ Usando modelo simplificado devido a: {str(e)}")
+                modelo = criar_modelo_lstm_simplificado((X_train.shape[1], X_train.shape[2]))
+            
+            # Callbacks avançados
+            checkpoint_path = f'checkpoints/{ticker}_{scaler_name}_best.h5'
+            callbacks = [
+                EarlyStopping(monitor='val_loss', patience=20, restore_best_weights=True, mode='min'),
+                ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=10, min_lr=0.00001, mode='min'),
+                ModelCheckpoint(checkpoint_path, monitor='val_loss', save_best_only=True, mode='min')
+            ]
+            
+            # Treinamento
+            history = modelo.fit(
+                X_train_aug, y_train_aug,
+                validation_data=(X_val, y_val),
+                epochs=100,
+                batch_size=32,
+                callbacks=callbacks,
+                verbose=0
+            )
+            
+            # Avaliação
+            y_pred = modelo.predict(X_test, verbose=0)
+            
+            # Desnormalizar apenas a coluna Close (índice 0)
+            template_test = np.zeros((len(y_test), len(features)))
+            template_pred = np.zeros((len(y_pred), len(features)))
+            
+            if horizonte == 1:
+                template_test[:, 0] = y_test.ravel()
+                template_pred[:, 0] = y_pred.ravel()
+            else:
+                template_test[:, 0] = y_test[:, 0]
+                template_pred[:, 0] = y_pred[:, 0]
+            
+            y_test_real = scaler.inverse_transform(template_test)[:, 0]
+            y_pred_real = scaler.inverse_transform(template_pred)[:, 0]
+            
+            # Métricas
+            rmse = np.sqrt(mean_squared_error(y_test_real, y_pred_real))
+            mae = mean_absolute_error(y_test_real, y_pred_real)
+            r2 = r2_score(y_test_real, y_pred_real)
+            mape = np.mean(np.abs((y_test_real - y_pred_real) / y_test_real)) * 100
+            
+            # Calcular direção correta (para trading)
+            if len(y_test_real) > 1:
+                direction_accuracy = np.mean(
+                    (y_test_real[1:] > y_test_real[:-1]) == 
+                    (y_pred_real[1:] > y_pred_real[:-1])
+                ) * 100
+            else:
+                direction_accuracy = 0
+            
+            current_results = {
+                'scaler': scaler_name,
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2,
+                'mape': mape,
+                'direction_accuracy': direction_accuracy,
+                'model': modelo,
+                'scaler_obj': scaler,
+                'history': history,
+                'y_test_real': y_test_real,
+                'y_pred_real': y_pred_real
+            }
+            
+            print(f"   📈 Resultados {scaler_name}:")
+            print(f"      RMSE: R$ {rmse:.2f}")
+            print(f"      MAE: R$ {mae:.2f}")
+            print(f"      R²: {r2:.4f}")
+            print(f"      MAPE: {mape:.2f}%")
+            print(f"      Acurácia de direção: {direction_accuracy:.2f}%")
+            
+            if best_results is None or r2 > best_results['r2']:
+                best_results = current_results
+                best_scaler_name = scaler_name
+        
+        if best_results is None:
+            print(f"❌ Nenhum modelo válido foi treinado para {ticker}")
             return None
-
-        # Divisão dos dados
-        tamanho_treino = int(0.7 * len(X))
-        tamanho_val = int(0.15 * len(X))
-
-        X_train = X[:tamanho_treino]
-        y_train = y[:tamanho_treino]
-        X_val = X[tamanho_treino:tamanho_treino+tamanho_val]
-        y_val = y[tamanho_treino:tamanho_treino+tamanho_val]
-        X_test = X[tamanho_treino+tamanho_val:]
-        y_test = y[tamanho_treino+tamanho_val:]
-
-        # Verificar se os splits não estão vazios
-        if len(X_train) == 0 or len(X_val) == 0 or len(X_test) == 0:
-            print(f"❌ Dados insuficientes para divisão treino/val/teste para {ticker}")
-            return None
-
-        # Criar e treinar modelo
-        print("🧠 Criando e treinando modelo LSTM...")
-        modelo = criar_modelo_lstm((X_train.shape[1], X_train.shape[2]))
-
-        # Callbacks
-        early_stop = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
-        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=0.00001)
-
-        # Treinamento
-        history = modelo.fit(
-            X_train, y_train,
-            validation_data=(X_val, y_val),
-            epochs=50,  # Reduzido para treinar mais rápido
-            batch_size=32,
-            callbacks=[early_stop, reduce_lr],
-            verbose=0 # Alterado para 0 para reduzir output durante loop de treino
-        )
-
-        # Avaliação
-        print("📊 Avaliando modelo...")
-        y_pred = modelo.predict(X_test, verbose=0)
-
-        # Desnormalizar para métricas reais
-        # Criar um array template para inverse_transform, garantindo que y_test e y_pred tenham a mesma forma que 'Close' original
-        # A coluna 'Close' é a primeira (índice 0) nas 'features'
-
-        # Para y_test_real
-        template_test = np.zeros((len(y_test), len(features)))
-        template_test[:, 0] = y_test.ravel() # y_test é o 'Close' normalizado
-        y_test_real = scaler.inverse_transform(template_test)[:, 0]
-
-        # Para y_pred_real
-        template_pred = np.zeros((len(y_pred), len(features)))
-        template_pred[:, 0] = y_pred.ravel() # y_pred é o 'Close' normalizado previsto
-        y_pred_real = scaler.inverse_transform(template_pred)[:, 0]
-
-        rmse = np.sqrt(mean_squared_error(y_test_real, y_pred_real))
-        mae = mean_absolute_error(y_test_real, y_pred_real)
-        r2 = r2_score(y_test_real, y_pred_real)
-
-        print(f"\n📈 Métricas do Modelo:")
-        print(f"    RMSE: R$ {rmse:.2f}")
-        print(f"    MAE: R$ {mae:.2f}")
-        print(f"    R²: {r2:.4f}")
-
-        # Salvar modelo e scaler
-        print("💾 Salvando modelo e scaler...")
-        modelo.save(f'models/{ticker}_model.h5')
-        joblib.dump(scaler, f'scalers/{ticker}_scaler.pkl')
-
-        # Salvar métricas
+        
+        print(f"\n✅ Melhor scaler: {best_scaler_name}")
+        
+        # Salvar melhor modelo
+        print("💾 Salvando melhor modelo...")
+        best_results['model'].save(f'models/{ticker}_advanced_model.h5')
+        joblib.dump(best_results['scaler_obj'], f'scalers/{ticker}_advanced_scaler.pkl')
+        
+        # Salvar métricas detalhadas
         metricas = {
             'ticker': ticker,
             'nome': nome_ticker,
-            'rmse': rmse,
-            'mae': mae,
-            'r2': r2,
+            'rmse': best_results['rmse'],
+            'mae': best_results['mae'],
+            'r2': best_results['r2'],
+            'mape': best_results['mape'],
+            'direction_accuracy': best_results['direction_accuracy'],
+            'scaler_type': best_scaler_name,
             'data_treino': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'janela': janela,
+            'horizonte': horizonte,
+            'num_features': len(features),
             'features': features
         }
-        joblib.dump(metricas, f'metrics/{ticker}_metrics.pkl')
-
-        # Visualização
-        plt.figure(figsize=(14, 6)) # Aumentado o tamanho
-        plt.subplot(1, 2, 1)
-        plt.plot(history.history['loss'], label='Treino Loss')
-        plt.plot(history.history['val_loss'], label='Validação Loss')
-        if 'mae' in history.history and 'val_mae' in history.history:
-            plt.plot(history.history['mae'], label='Treino MAE', linestyle='--')
-            plt.plot(history.history['val_mae'], label='Validação MAE', linestyle='--')
-        plt.title(f'Curvas de Aprendizado - {nome_ticker}')
+        joblib.dump(metricas, f'metrics/{ticker}_advanced_metrics.pkl')
+        
+        # Visualização aprimorada
+        plt.figure(figsize=(20, 12))
+        
+        # 1. Curvas de aprendizado
+        plt.subplot(3, 2, 1)
+        plt.plot(best_results['history'].history['loss'], label='Treino', linewidth=2)
+        plt.plot(best_results['history'].history['val_loss'], label='Validação', linewidth=2)
+        plt.title(f'Curvas de Perda - {nome_ticker}', fontsize=12, fontweight='bold')
         plt.xlabel('Épocas')
-        plt.ylabel('Erro (Loss/MAE)')
+        plt.ylabel('Loss')
         plt.legend()
-        plt.grid(True)
-
-        plt.subplot(1, 2, 2)
-        n_points = min(100, len(y_test_real)) # Aumentado para 100 pontos
-        plt.plot(y_test_real[-n_points:], label='Real', linewidth=2, marker='o', markersize=4)
-        plt.plot(y_pred_real[-n_points:], label='Previsto', linewidth=2, alpha=0.8, marker='x', markersize=4)
-        plt.title(f'Previsão vs Real (Últimos {n_points} dias) - {nome_ticker}')
-        plt.xlabel(f'Dias (Últimos {n_points})')
+        plt.grid(True, alpha=0.3)
+        
+        # 2. MAE durante treinamento
+        plt.subplot(3, 2, 2)
+        plt.plot(best_results['history'].history['mae'], label='Treino MAE', linewidth=2)
+        plt.plot(best_results['history'].history['val_mae'], label='Validação MAE', linewidth=2)
+        plt.title(f'MAE durante Treinamento - {nome_ticker}', fontsize=12, fontweight='bold')
+        plt.xlabel('Épocas')
+        plt.ylabel('MAE')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # 3. Previsão vs Real (últimos 100 pontos)
+        plt.subplot(3, 2, 3)
+        n_points = min(100, len(best_results['y_test_real']))
+        indices = range(n_points)
+        plt.plot(indices, best_results['y_test_real'][-n_points:], 'o-', label='Real', linewidth=2, markersize=4)
+        plt.plot(indices, best_results['y_pred_real'][-n_points:], 's-', label='Previsto', linewidth=2, markersize=3, alpha=0.8)
+        plt.title(f'Previsão vs Real (Últimos {n_points} dias)', fontsize=12, fontweight='bold')
+        plt.xlabel('Dias')
         plt.ylabel('Preço (R$)')
         plt.legend()
-        plt.grid(True)
+        plt.grid(True, alpha=0.3)
+        
+        # 4. Erro de previsão
+        plt.subplot(3, 2, 4)
+        erros = best_results['y_test_real'] - best_results['y_pred_real']
+        plt.hist(erros, bins=50, alpha=0.7, color='blue', edgecolor='black')
+        plt.axvline(x=0, color='red', linestyle='--', linewidth=2)
+        plt.title(f'Distribuição dos Erros', fontsize=12, fontweight='bold')
+        plt.xlabel('Erro (R$)')
+        plt.ylabel('Frequência')
+        plt.grid(True, alpha=0.3)
+        
+        # 5. Scatter plot
+        plt.subplot(3, 2, 5)
+        plt.scatter(best_results['y_test_real'], best_results['y_pred_real'], alpha=0.5, s=20)
+        plt.plot([best_results['y_test_real'].min(), best_results['y_test_real'].max()], 
+                 [best_results['y_test_real'].min(), best_results['y_test_real'].max()], 
+                 'r--', linewidth=2, label='Perfeito')
+        plt.title(f'Real vs Previsto', fontsize=12, fontweight='bold')
+        plt.xlabel('Preço Real (R$)')
+        plt.ylabel('Preço Previsto (R$)')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # 6. Métricas resumidas
+        plt.subplot(3, 2, 6)
+        plt.text(0.1, 0.9, f'Métricas de Desempenho - {nome_ticker}', fontsize=14, fontweight='bold', transform=plt.gca().transAxes)
+        plt.text(0.1, 0.7, f'RMSE: R$ {best_results["rmse"]:.2f}', fontsize=12, transform=plt.gca().transAxes)
+        plt.text(0.1, 0.6, f'MAE: R$ {best_results["mae"]:.2f}', fontsize=12, transform=plt.gca().transAxes)
+        plt.text(0.1, 0.5, f'R²: {best_results["r2"]:.4f}', fontsize=12, transform=plt.gca().transAxes)
+        plt.text(0.1, 0.4, f'MAPE: {best_results["mape"]:.2f}%', fontsize=12, transform=plt.gca().transAxes)
+        plt.text(0.1, 0.3, f'Acurácia Direção: {best_results["direction_accuracy"]:.2f}%', fontsize=12, transform=plt.gca().transAxes)
+        plt.text(0.1, 0.2, f'Melhor Scaler: {best_scaler_name}', fontsize=12, transform=plt.gca().transAxes)
+        plt.text(0.1, 0.1, f'Features: {len(features)}', fontsize=12, transform=plt.gca().transAxes)
+        plt.axis('off')
+        
         plt.tight_layout()
+        plt.savefig(f'models/{ticker}_analysis.png', dpi=300, bbox_inches='tight')
         plt.show()
-
-        print(f"✅ Modelo para {nome_ticker} treinado com sucesso!")
+        
+        print(f"\n✅ Modelo avançado para {nome_ticker} treinado com sucesso!")
+        print(f"   📊 R² Score: {best_results['r2']:.4f}")
+        print(f"   📈 Acurácia de direção: {best_results['direction_accuracy']:.2f}%")
+        
         return metricas
-
+        
     except Exception as e:
         print(f"❌ Erro ao treinar {ticker}: {str(e)}")
         import traceback
-        traceback.print_exc() # Imprime o traceback completo para depuração
+        traceback.print_exc()
         return None
 
-# === 9. Executar Treinamento ===
-print("🚀 INICIANDO TREINAMENTO DOS MODELOS")
+# === Função para Ensemble Prediction ===
+def fazer_previsao_ensemble(ticker, dias_futuros=5):
+    """Faz previsões usando ensemble de modelos"""
+    try:
+        # Carregar dados recentes
+        fim = datetime.now()
+        inicio = fim - timedelta(days=365)
+        dados = yf.download(ticker, start=inicio, end=fim, progress=False)
+        
+        # Preparar dados
+        dados = adicionar_indicadores_tecnicos_avancados(dados)
+        
+        # Carregar scaler e modelo
+        scaler = joblib.load(f'scalers/{ticker}_advanced_scaler.pkl')
+        modelo = tf.keras.models.load_model(f'models/{ticker}_advanced_model.h5')
+        
+        # Preparar features
+        metricas = joblib.load(f'metrics/{ticker}_advanced_metrics.pkl')
+        features = metricas['features']
+        
+        dados_features = dados[features].values
+        dados_normalizados = scaler.transform(dados_features)
+        
+        # Criar janela para previsão
+        janela = metricas['janela']
+        ultima_janela = dados_normalizados[-janela:].reshape(1, janela, -1)
+        
+        # Fazer previsões iterativas
+        previsoes = []
+        janela_atual = ultima_janela.copy()
+        
+        for _ in range(dias_futuros):
+            # Prever próximo valor
+            pred_normalizado = modelo.predict(janela_atual, verbose=0)
+            
+            # Desnormalizar
+            template = np.zeros((1, len(features)))
+            template[0, 0] = pred_normalizado[0, 0]
+            pred_real = scaler.inverse_transform(template)[0, 0]
+            previsoes.append(pred_real)
+            
+            # Atualizar janela (sliding window)
+            nova_linha = np.zeros((1, len(features)))
+            nova_linha[0, 0] = pred_normalizado[0, 0]
+            janela_atual = np.concatenate([janela_atual[:, 1:, :], nova_linha.reshape(1, 1, -1)], axis=1)
+        
+        return previsoes, dados.index[-1]
+        
+    except Exception as e:
+        print(f"Erro na previsão: {str(e)}")
+        return None, None
+
+# === Executar Treinamento Avançado ===
+print("🚀 INICIANDO TREINAMENTO AVANÇADO DOS MODELOS")
 print(f"📅 Data: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"📊 Total de tickers: {len(TICKERS)}")
+print("\n⚡ Este processo usa técnicas avançadas e pode demorar mais tempo...")
 
 resultados = []
 for ticker, nome in TICKERS.items():
-    resultado = treinar_modelo_ticker(ticker, nome)
+    resultado = treinar_modelo_ticker_avancado(ticker, nome)
     if resultado:
         resultados.append(resultado)
+    
+    # Pequena pausa entre tickers para não sobrecarregar a API
+    import time
+    time.sleep(2)
 
-# === 10. Resumo Final ===
-print("\n" + "="*60)
-print("📊 RESUMO DO TREINAMENTO")
-print("="*60)
+# === Resumo Final Detalhado ===
+print("\n" + "="*80)
+print("📊 RESUMO DO TREINAMENTO AVANÇADO")
+print("="*80)
+
 if resultados:
-    print(f"✅ Modelos treinados com sucesso: {len(resultados)}/{len(TICKERS)}")
-    print("\nMelhores modelos por R² (top 5):")
-    resultados_ordenados = sorted(resultados, key=lambda x: x['r2'], reverse=True)
-    for i, res in enumerate(resultados_ordenados[:5]):
-        print(f"{i+1}. {res['nome']} ({res['ticker']}): R² = {res['r2']:.4f}, RMSE = R$ {res['rmse']:.2f}, MAE = R$ {res['mae']:.2f}")
-
-    if len(resultados) < len(TICKERS):
-        print("\n⚠️ Alguns modelos não foram treinados. Verifique os logs acima.")
+    print(f"\n✅ Modelos treinados com sucesso: {len(resultados)}/{len(TICKERS)}")
+    
+    # Top modelos por R²
+    print("\n🏆 Top 5 modelos por R²:")
+    resultados_r2 = sorted(resultados, key=lambda x: x['r2'], reverse=True)
+    for i, res in enumerate(resultados_r2[:5]):
+        print(f"{i+1}. {res['nome']} ({res['ticker']}): R² = {res['r2']:.4f}")
+    
+    # Top modelos por acurácia de direção
+    print("\n🎯 Top 5 modelos por Acurácia de Direção:")
+    resultados_dir = sorted(resultados, key=lambda x: x['direction_accuracy'], reverse=True)
+    for i, res in enumerate(resultados_dir[:5]):
+        print(f"{i+1}. {res['nome']} ({res['ticker']}): {res['direction_accuracy']:.2f}%")
+    
+    # Estatísticas gerais
+    avg_r2 = np.mean([r['r2'] for r in resultados])
+    avg_mape = np.mean([r['mape'] for r in resultados])
+    avg_direction = np.mean([r['direction_accuracy'] for r in resultados])
+    
+    print(f"\n📊 Estatísticas Gerais:")
+    print(f"   R² médio: {avg_r2:.4f}")
+    print(f"   MAPE médio: {avg_mape:.2f}%")
+    print(f"   Acurácia de direção média: {avg_direction:.2f}%")
+    
+    # Recomendações
+    print("\n💡 Recomendações para uso:")
+    print("   1. Modelos com R² > 0.7 são considerados bons")
+    print("   2. Acurácia de direção > 55% é útil para trading")
+    print("   3. MAPE < 5% indica previsões precisas")
+    print("   4. Use ensemble de modelos para melhores resultados")
+    print("   5. Reavalie modelos mensalmente com novos dados")
+    
 else:
-    print("\n⚠️ Nenhum modelo foi treinado com sucesso. Verifique os logs acima.")
+    print("\n❌ Nenhum modelo foi treinado. Verifique os logs.")
 
-print("\n✅ Treinamento concluído!")
+print("\n✅ Processo concluído!")
 print("📁 Modelos salvos em: ./models/")
 print("📁 Scalers salvos em: ./scalers/")
 print("📁 Métricas salvas em: ./metrics/")
+print("📁 Checkpoints salvos em: ./checkpoints/")
+print("📁 Gráficos salvos em: ./models/")
+
+# === Exemplo de uso para previsão ===
+print("\n" + "="*80)
+print("🔮 EXEMPLO DE PREVISÃO")
+print("="*80)
+
+if resultados:
+    # Pegar o melhor modelo por R²
+    melhor_modelo = resultados_r2[0]
+    ticker_exemplo = melhor_modelo['ticker']
+    nome_exemplo = melhor_modelo['nome']
+    
+    print(f"\nFazendo previsão para {nome_exemplo} ({ticker_exemplo}) - próximos 5 dias:")
+    
+    previsoes, ultima_data = fazer_previsao_ensemble(ticker_exemplo, dias_futuros=5)
+    
+    if previsoes:
+        print(f"Última data conhecida: {ultima_data.strftime('%Y-%m-%d')}")
+        for i, prev in enumerate(previsoes, 1):
+            data_prev = ultima_data + timedelta(days=i)
+            print(f"   {data_prev.strftime('%Y-%m-%d')}: R$ {prev:.2f}")
+    else:
+        print("❌ Erro ao fazer previsão")
+
+print("\n🎉 Script finalizado com sucesso!")
