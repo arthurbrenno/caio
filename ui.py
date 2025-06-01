@@ -564,7 +564,7 @@ def carregar_dados_ticker(ticker, periodo='1y'):
 def preparar_dados_para_previsao(dados, metricas):
     """Prepara dados para previsão, aplicando a mesma lógica do treinamento"""
     try:
-        # Recriar a lógica de separação de features do treinamento
+        # Para modelo de classificação direcional, as features são diferentes
         # Target (Close) deve ser separado das features
         target_col = 'Close'
         
@@ -597,26 +597,25 @@ def preparar_dados_para_previsao(dados, metricas):
         dados_features.fillna(0, inplace=True)
         
         # Aplicar seleção de features importantes se disponível
-        if 'important_indices' in metricas and 'selected_features' in metricas:
-            important_indices = metricas['important_indices']
-            selected_features = metricas['selected_features']
+        if 'feature_names' in metricas:
+            feature_names = metricas['feature_names']
             
-            st.info(f"🎯 Usando {len(selected_features)} features selecionadas durante o treinamento")
+            st.info(f"🎯 Usando {len(feature_names)} features selecionadas durante o treinamento")
             
             # Verificar se as features selecionadas existem
-            features_selecionadas_disponiveis = [f for f in selected_features if f in dados_features.columns]
+            features_selecionadas_disponiveis = [f for f in feature_names if f in dados_features.columns]
             
-            if len(features_selecionadas_disponiveis) < len(selected_features):
-                st.warning(f"⚠️ Algumas features selecionadas estão faltando. Usando {len(features_selecionadas_disponiveis)} de {len(selected_features)}")
+            if len(features_selecionadas_disponiveis) < len(feature_names):
+                st.warning(f"⚠️ Algumas features selecionadas estão faltando. Usando {len(features_selecionadas_disponiveis)} de {len(feature_names)}")
                 
                 # Preencher features selecionadas faltantes
-                for feature in selected_features:
+                for feature in feature_names:
                     if feature not in dados_features.columns:
                         dados_features[feature] = 0.0
             
             # Usar apenas as features selecionadas, na ordem correta
             try:
-                dados_features_finais = dados_features[selected_features]
+                dados_features_finais = dados_features[feature_names]
                 st.success(f"✅ Features preparadas: {dados_features_finais.shape}")
                 return dados_features_finais.values
             except KeyError as e:
@@ -780,9 +779,9 @@ def carregar_modelo_seguro(ticker):
     """Carrega modelo, scaler e métricas de forma segura"""
     try:
         # Verificar se arquivos existem
-        model_path = f'models/{ticker}_advanced_model.keras'
-        scaler_path = f'scalers/{ticker}_advanced_scaler.pkl'
-        metrics_path = f'metrics/{ticker}_advanced_metrics.pkl'
+        model_path = f'models/{ticker}_directional_model.keras'
+        scaler_path = f'scalers/{ticker}_directional_scaler.pkl'
+        metrics_path = f'metrics/{ticker}_directional_metrics.pkl'
         
         if not all(os.path.exists(path) for path in [model_path, scaler_path, metrics_path]):
             return None, None, None, "Arquivos do modelo não encontrados"
@@ -838,14 +837,14 @@ with st.sidebar:
     st.markdown("---")
 
     # Informações do modelo
-    if os.path.exists(f'models/{ticker_selecionado}_advanced_model.keras'):
+    if os.path.exists(f'models/{ticker_selecionado}_directional_model.keras'):
         try:
-            metricas = joblib.load(f'metrics/{ticker_selecionado}_advanced_metrics.pkl')
+            metricas = joblib.load(f'metrics/{ticker_selecionado}_directional_metrics.pkl')
             st.markdown("### 🤖 Modelo Treinado")
             st.success(f"✅ Modelo disponível")
             st.info(f"📅 Treinado em: {metricas['data_treino']}")
-            st.metric("R² Score", f"{metricas['r2']:.4f}")
-            st.metric("RMSE", f"R$ {metricas['rmse']:.2f}")
+            st.metric("R² Score", f"{metricas.get('accuracy', 0):.4f}")
+            st.metric("RMSE", f"R$ {metricas.get('precision', 0):.2f}")
         except:
             st.error("❌ Erro ao carregar métricas do modelo")
     else:
@@ -859,6 +858,30 @@ with st.sidebar:
     if st.button("🌐 Testar Conectividade", use_container_width=True):
         testar_conectividade_yahoo()
     
+    # Verificação de modelos disponíveis
+    if st.button("🔍 Verificar Modelos", use_container_width=True):
+        st.markdown("#### 📂 Status dos Modelos:")
+        for ticker, nome in tickers_disponiveis.items():
+            model_path = f'models/{ticker}_directional_model.keras'
+            scaler_path = f'scalers/{ticker}_directional_scaler.pkl'
+            metrics_path = f'metrics/{ticker}_directional_metrics.pkl'
+            
+            status_model = "✅" if os.path.exists(model_path) else "❌"
+            status_scaler = "✅" if os.path.exists(scaler_path) else "❌"
+            status_metrics = "✅" if os.path.exists(metrics_path) else "❌"
+            
+            all_exist = all(os.path.exists(p) for p in [model_path, scaler_path, metrics_path])
+            
+            if all_exist:
+                try:
+                    metrics = joblib.load(metrics_path)
+                    accuracy = metrics.get('accuracy', 0)
+                    st.success(f"**{nome}**: Completo (Acc: {accuracy:.1%})")
+                except:
+                    st.warning(f"**{nome}**: Arquivos existem mas há erro ao carregar")
+            else:
+                st.error(f"**{nome}**: Modelo={status_model} Scaler={status_scaler} Métricas={status_metrics}")
+    
     # Botão para limpar cache
     if st.button("🗑️ Limpar Cache", use_container_width=True):
         st.cache_data.clear()
@@ -869,6 +892,19 @@ with st.sidebar:
     # Informações de ajuda
     with st.expander("❓ Problemas Comuns"):
         st.markdown("""
+        **❌ "Modelo não encontrado"?**
+        - Execute primeiro o `treinamento.py` para criar os modelos
+        - Verifique se existem as pastas: `models/`, `scalers/`, `metrics/`
+        - Use o botão "🔍 Verificar Modelos" acima para diagnóstico
+        - Certifique-se que os arquivos foram salvos corretamente
+        
+        **📁 Estrutura de arquivos necessária:**
+        ```
+        models/{ticker}_directional_model.keras
+        scalers/{ticker}_directional_scaler.pkl
+        metrics/{ticker}_directional_metrics.pkl
+        ```
+        
         **Não consegue carregar dados?**
         - Verifique sua conexão com a internet
         - Teste a conectividade usando o botão acima
@@ -881,7 +917,21 @@ with st.sidebar:
         **Erro de modelo?**
         - Execute primeiro o treinamento.py
         - Verifique se os arquivos foram salvos corretamente
+        - Certifique-se que não há erros no console durante o treinamento
         """)
+    
+    # Adicionar informações sobre os arquivos necessários
+    st.markdown("---")
+    st.markdown("### 📋 Arquivos Necessários")
+    if st.button("📂 Verificar Estrutura de Diretórios", use_container_width=True):
+        directories = ['models', 'scalers', 'metrics']
+        for directory in directories:
+            if os.path.exists(directory):
+                files_count = len([f for f in os.listdir(directory) if f.endswith(('.keras', '.pkl'))])
+                st.success(f"✅ `{directory}/` existe ({files_count} arquivos)")
+            else:
+                st.error(f"❌ `{directory}/` não existe")
+                st.info(f"💡 Execute: `os.makedirs('{directory}', exist_ok=True)`")
 
 # Configurar modelo Gemini se a API key foi fornecida
 if GOOGLE_API_KEY and not st.session_state.model_configured:
@@ -891,7 +941,7 @@ if GOOGLE_API_KEY and not st.session_state.model_configured:
         st.session_state.gemini_model = model
 
 # Layout principal
-if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_advanced_model.keras'):
+if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_directional_model.keras'):
 
     # Carregar dados e modelo
     with st.spinner('Carregando dados...'):
@@ -1026,8 +1076,8 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_advanced_
             st.markdown("### 🔮 Previsão para o Próximo Dia")
 
             # Preparar dados para previsão
-            features = metricas['features']
-            janela = metricas['janela']
+            features = metricas.get('feature_names', [])
+            janela = metricas.get('janela', 15)
 
             # Pegar últimos dados
             if len(dados) >= janela:
@@ -1037,62 +1087,35 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_advanced_
                 if ultimos_dados_preparados is not None:
                     ultimos_dados = ultimos_dados_preparados[-janela:]
                     
-                    # Obter informações sobre features e scaler
-                    num_selected_features = len(metricas.get('selected_features', []))
-                    total_scaler_features = len(metricas.get('features', [])) - 1  # -1 para excluir Close
+                    # Obter informações sobre features
+                    num_selected_features = len(metricas.get('feature_names', []))
                     
                     st.info(f"📊 Dados preparados: {ultimos_dados.shape}")
                     st.info(f"🎯 Features selecionadas: {num_selected_features}")
                     
-                    # O scaler foi treinado com [feature_cols + [target_col]]
-                    # Precisamos criar um array com zeros para as features não selecionadas + target
-                    dados_para_scaler = np.zeros((ultimos_dados.shape[0], total_scaler_features + 1))
+                    # Escalar os dados
+                    ultimos_dados_norm = scaler.transform(ultimos_dados)
                     
-                    # Se temos informações sobre features selecionadas, mapeá-las para posições corretas
-                    if 'selected_features' in metricas and 'important_indices' in metricas:
-                        # Mapear features selecionadas para suas posições originais
-                        important_indices = metricas['important_indices']
-                        for i, idx in enumerate(important_indices):
-                            if i < ultimos_dados.shape[1] and idx < total_scaler_features:
-                                dados_para_scaler[:, idx] = ultimos_dados[:, i]
-                    else:
-                        # Fallback: usar as primeiras features disponíveis
-                        n_features = min(ultimos_dados.shape[1], total_scaler_features)
-                        dados_para_scaler[:, :n_features] = ultimos_dados[:, :n_features]
-                    
-                    # Escalar os dados (incluindo posição do target como zero)
-                    ultimos_dados_norm = scaler.transform(dados_para_scaler)
-                    
-                    # Extrair apenas as features selecionadas para o modelo
-                    if 'important_indices' in metricas:
-                        features_for_model = ultimos_dados_norm[:, metricas['important_indices']]
-                    else:
-                        features_for_model = ultimos_dados_norm[:, :-1]  # Excluir target
-                    
-                    # Fazer previsão
-                    X_pred = features_for_model.reshape(1, janela, features_for_model.shape[1])
-                    previsao_norm = modelo.predict(X_pred, verbose=0)
-
-                    # Desnormalizar - criar array completo e colocar previsão na posição do target
-                    previsao_completa = np.zeros((1, total_scaler_features + 1))
-                    previsao_completa[0, -1] = previsao_norm[0, 0]  # Target (Close) é a última posição
-                    previsao_real = scaler.inverse_transform(previsao_completa)[0, -1]
-
-                    # Calcular variação prevista
-                    variacao_prevista = ((previsao_real - preco_atual) / preco_atual) * 100
+                    # Fazer previsão (modelo de classificação)
+                    X_pred = ultimos_dados_norm.reshape(1, janela, ultimos_dados_norm.shape[1])
+                    previsao_proba = modelo.predict(X_pred, verbose=0)[0, 0]
+                    previsao_classe = 1 if previsao_proba > 0.5 else 0
 
                     # Display da previsão
                     col1, col2, col3 = st.columns([1, 2, 1])
 
                     with col2:
                         st.markdown('<div class="metric-card" style="text-align: center;">', unsafe_allow_html=True)
-                        st.markdown(f'<h2 class="big-metric">R$ {previsao_real:.2f}</h2>', unsafe_allow_html=True)
-                        st.markdown(f"<h4>Variação Prevista: {variacao_prevista:+.2f}%</h4>", unsafe_allow_html=True)
-
-                        if variacao_prevista > 0:
+                        
+                        if previsao_classe == 1:
+                            st.markdown(f'<h2 class="big-metric" style="color: #4CAF50;">📈 ALTA</h2>', unsafe_allow_html=True)
                             st.success(f"📈 Tendência de ALTA")
                         else:
+                            st.markdown(f'<h2 class="big-metric" style="color: #f44336;">📉 BAIXA</h2>', unsafe_allow_html=True)
                             st.error(f"📉 Tendência de BAIXA")
+                        
+                        st.markdown(f"<h4>Probabilidade: {previsao_proba:.1%}</h4>", unsafe_allow_html=True)
+                        st.markdown(f"<h4>Confiança: {abs(previsao_proba - 0.5) * 2:.1%}</h4>", unsafe_allow_html=True)
 
                         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1102,23 +1125,23 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_advanced_
                     col1, col2, col3 = st.columns(3)
 
                     with col1:
-                        confianca_r2 = metricas['r2'] * 100
-                        st.metric("🎯 Precisão Histórica", f"{confianca_r2:.1f}%")
+                        accuracy = metricas.get('accuracy', 0) * 100
+                        st.metric("🎯 Acurácia Histórica", f"{accuracy:.1f}%")
 
                     with col2:
-                        st.metric("📉 Erro Médio (MAE)", f"R$ {metricas['mae']:.2f}")
+                        precision = metricas.get('precision', 0)
+                        st.metric("📊 Precisão", f"{precision:.3f}")
 
                     with col3:
-                        risco_score = min(100, (metricas['rmse'] / extrair_valor_escalar(preco_atual)) * 100)
-                        st.metric("⚠️ Nível de Risco", f"{risco_score:.1f}%")
+                        f1_score = metricas.get('f1_score', 0)
+                        st.metric("📈 F1 Score", f"{f1_score:.3f}")
 
                     # Gráfico de previsão
                     st.markdown("### 📈 Visualização da Previsão")
 
                     # Últimos 30 dias + previsão
                     ultimos_30_dias = dados['Close'].iloc[-30:].copy()
-                    datas = pd.date_range(start=ultimos_30_dias.index[-1] + timedelta(days=1), periods=1)
-
+                    
                     fig_prev = go.Figure()
 
                     # Histórico
@@ -1130,20 +1153,25 @@ if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_advanced_
                         line=dict(color='#2196F3', width=3)
                     ))
 
-                    # Previsão
-                    fig_prev.add_trace(go.Scatter(
-                        x=[ultimos_30_dias.index[-1], datas[0]],
-                        y=[extrair_valor_escalar(preco_atual), previsao_real],
-                        mode='lines+markers',
-                        name='Previsão',
-                        line=dict(color='#4CAF50', width=3, dash='dash'),
-                        marker=dict(size=10)
-                    ))
+                    # Indicador de previsão
+                    ultimo_preco = extrair_valor_escalar(preco_atual)
+                    cor_previsao = '#4CAF50' if previsao_classe == 1 else '#f44336'
+                    simbolo_previsao = '📈' if previsao_classe == 1 else '📉'
+                    
+                    fig_prev.add_annotation(
+                        x=ultimos_30_dias.index[-1],
+                        y=ultimo_preco,
+                        text=f"{simbolo_previsao} {previsao_proba:.1%}",
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowcolor=cor_previsao,
+                        font=dict(size=14, color=cor_previsao)
+                    )
 
                     fig_prev.update_layout(
                         template="plotly_white",
                         height=400,
-                        title="Últimos 30 dias + Previsão",
+                        title="Últimos 30 dias + Previsão Direcional",
                         xaxis_title="Data",
                         yaxis_title="Preço (R$)",
                         showlegend=True
