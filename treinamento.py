@@ -295,7 +295,7 @@ def treinar_modelo_ticker_melhorado(ticker, nome_ticker):
         dados = adicionar_indicadores_tecnicos_essenciais(dados)
         
         # Preencher valores faltantes
-        dados.fillna(method='ffill', inplace=True)
+        dados.ffill(inplace=True)
         dados.dropna(inplace=True)
         
         if len(dados) < 300:
@@ -647,6 +647,10 @@ def fazer_previsao_ensemble(ticker, dias_futuros=5):
         inicio = fim - timedelta(days=365)
         dados = yf.download(ticker, start=inicio, end=fim, progress=False)
         
+        # Flatten multi-level columns if they exist
+        if isinstance(dados.columns, pd.MultiIndex):
+            dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
+        
         # Coletar dados de mercado
         dados_mercado = coletar_dados_mercado(inicio, fim)
         if len(dados_mercado) > 0:
@@ -654,7 +658,7 @@ def fazer_previsao_ensemble(ticker, dias_futuros=5):
         
         # Adicionar indicadores
         dados = adicionar_indicadores_tecnicos_essenciais(dados)
-        dados.fillna(method='ffill', inplace=True)
+        dados.ffill(inplace=True)
         dados.dropna(inplace=True)
         
         # Carregar configurações
