@@ -1566,7 +1566,7 @@ if ticker_selecionado:
                                 <div class="metric-card" style="text-align: center; background: linear-gradient(135deg, #00D4AA, #00B894);">
                                     <h1 style="color: white; margin: 0;">📈 TENDÊNCIA DE ALTA</h1>
                                     <h2 style="color: white; margin: 10px 0;">Probabilidade: {previsao_proba:.1%}</h2>
-                                    <h3 style="color: white; margin: 0;">Confiança: {confianca:.1%}</h3>
+                                    <!--<h3 style="color: white; margin: 0;">Confiança: {confianca:.1%}</h3>-->
                                 </div>
                                 ''', unsafe_allow_html=True)
                             else:
@@ -1574,7 +1574,7 @@ if ticker_selecionado:
                                 <div class="metric-card" style="text-align: center; background: linear-gradient(135deg, #FF6B6B, #E55656);">
                                     <h1 style="color: white; margin: 0;">📉 TENDÊNCIA DE BAIXA</h1>
                                     <h2 style="color: white; margin: 10px 0;">Probabilidade: {1-previsao_proba:.1%}</h2>
-                                    <h3 style="color: white; margin: 0;">Confiança: {confianca:.1%}</h3>
+                                    <!--<h3 style="color: white; margin: 0;">Confiança: {confianca:.1%}</h3>-->
                                 </div>
                                 ''', unsafe_allow_html=True)
 
