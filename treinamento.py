@@ -51,10 +51,10 @@ tf.random.set_seed(42)
 # === Configuração Aprimorada ===
 TICKERS = {
     'PETR4.SA': 'Petrobras',
-    # 'VALE3.SA': 'Vale',
-    # 'ITUB4.SA': 'Itaú Unibanco',
-    # 'BBDC4.SA': 'Bradesco',
-    # 'ABEV3.SA': 'Ambev',
+    'VALE3.SA': 'Vale',
+    'ITUB4.SA': 'Itaú Unibanco',
+    'BBDC4.SA': 'Bradesco',
+    'ABEV3.SA': 'Ambev',
 }
 
 # Índices de mercado e correlações

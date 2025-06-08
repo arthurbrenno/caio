@@ -96,20 +96,36 @@ st.markdown("""
 
     /* Cards com efeito glassmorphism */
     .metric-card {
-        background: rgba(255, 255, 255, 0.25);
+        background: rgba(255, 255, 255, 0.9);
         backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.3);
         padding: 1.5rem;
         border-radius: 20px;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
         margin-bottom: 1rem;
         color: #2c3e50;
-        transition: transform 0.3s ease;
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
     }
 
     .metric-card:hover {
-        transform: translateY(-2px);
+        transform: translateY(-4px);
         box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+    }
+    
+    /* Pequenos cards de métricas */
+    .mini-metric-card {
+        background: rgba(255, 255, 255, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        padding: 1rem;
+        border-radius: 12px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+        margin: 0.5rem 0;
+        transition: all 0.3s ease;
+    }
+    
+    .mini-metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
     }
 
     /* Header com gradiente animado */
@@ -974,11 +990,29 @@ with st.sidebar:
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("🎯 Acurácia", f"{metricas.get('accuracy', 0)*100:.1f}%")
-                st.metric("📊 F1 Score", f"{metricas.get('f1_score', 0):.3f}")
+                accuracy_val = metricas.get('accuracy', 0) * 100
+                precision_val = metricas.get('precision', 0)
+                st.markdown(f'''
+                <div class="mini-metric-card" style="text-align: center;">
+                    <div style="font-size: 0.8rem; color: #888; margin-bottom: 4px;">🎯 Acurácia</div>
+                    <div style="font-size: 1.4rem; font-weight: bold; color: #00D4AA;">{accuracy_val:.1f}%</div>
+                </div>
+                <div class="mini-metric-card" style="text-align: center;">
+                    <div style="font-size: 0.8rem; color: #888; margin-bottom: 4px;">📊 F1 Score</div>
+                    <div style="font-size: 1.4rem; font-weight: bold; color: #667eea;">{metricas.get('f1_score', 0):.3f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             with col2:
-                st.metric("🔍 Precisão", f"{metricas.get('precision', 0):.3f}")
-                st.metric("📈 Recall", f"{metricas.get('recall', 0):.3f}")
+                st.markdown(f'''
+                <div class="mini-metric-card" style="text-align: center;">
+                    <div style="font-size: 0.8rem; color: #888; margin-bottom: 4px;">🔍 Precisão</div>
+                    <div style="font-size: 1.4rem; font-weight: bold; color: #f093fb;">{precision_val:.3f}</div>
+                </div>
+                <div class="mini-metric-card" style="text-align: center;">
+                    <div style="font-size: 0.8rem; color: #888; margin-bottom: 4px;">📈 Recall</div>
+                    <div style="font-size: 1.4rem; font-weight: bold; color: #FFC107;">{metricas.get('recall', 0):.3f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             
             st.caption(f"🕒 Treinado em: {metricas.get('data_treino', 'N/A')}")
             st.caption(f"🧠 Modelo: {metricas.get('modelo_nome', 'N/A')}")
@@ -1140,44 +1174,120 @@ if ticker_selecionado:
             variacao_mensal = 0
 
         with col1:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric(
-                "💰 Preço Atual", 
-                f"R$ {preco_atual:.2f}",
-                f"{variacao_diaria:+.2f}%" if variacao_diaria != 0 else "0.00%",
-                delta_color="normal" if variacao_diaria >= 0 else "inverse"
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
+            delta_color = "#00D4AA" if variacao_diaria >= 0 else "#FF6B6B"
+            delta_symbol = "▲" if variacao_diaria >= 0 else "▼"
+            st.markdown(f'''
+            <div class="metric-card">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 1.2rem;">💰</span>
+                    <span style="margin-left: 8px; font-weight: bold; color: #666;">Preço Atual</span>
+                </div>
+                <div style="font-size: 2rem; font-weight: bold; color: #2c3e50; margin-bottom: 4px;">
+                    R$ {preco_atual:.2f}
+                </div>
+                <div style="color: {delta_color}; font-weight: bold;">
+                    {delta_symbol} {abs(variacao_diaria):.2f}%
+                </div>
+            </div>
+            ''', unsafe_allow_html=True)
 
         with col2:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric(
-                "📊 Volume", 
-                f"{volume_atual:,.0f}",
-                f"{volume_ratio:.1f}x média"
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
+            volume_color = "#00D4AA" if volume_ratio >= 1 else "#FFC107"
+            st.markdown(f'''
+            <div class="metric-card">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 1.2rem;">📊</span>
+                    <span style="margin-left: 8px; font-weight: bold; color: #666;">Volume</span>
+                </div>
+                <div style="font-size: 2rem; font-weight: bold; color: #2c3e50; margin-bottom: 4px;">
+                    {volume_atual:,.0f}
+                </div>
+                <div style="color: {volume_color}; font-weight: bold;">
+                    {volume_ratio:.1f}x média
+                </div>
+            </div>
+            ''', unsafe_allow_html=True)
 
         with col3:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            rsi_status = "⚠️ Sobrecomprado" if rsi_atual > 70 else "⚠️ Sobrevendido" if rsi_atual < 30 else "✅ Neutro"
-            st.metric("📈 RSI", f"{rsi_atual:.1f}", rsi_status)
-            st.markdown('</div>', unsafe_allow_html=True)
+            if rsi_atual > 70:
+                rsi_color = "#FF6B6B"
+                rsi_status = "⚠️ Sobrecomprado"
+            elif rsi_atual < 30:
+                rsi_color = "#FF6B6B" 
+                rsi_status = "⚠️ Sobrevendido"
+            else:
+                rsi_color = "#00D4AA"
+                rsi_status = "✅ Neutro"
+            
+            st.markdown(f'''
+            <div class="metric-card">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 1.2rem;">📈</span>
+                    <span style="margin-left: 8px; font-weight: bold; color: #666;">RSI</span>
+                </div>
+                <div style="font-size: 2rem; font-weight: bold; color: #2c3e50; margin-bottom: 4px;">
+                    {rsi_atual:.1f}
+                </div>
+                <div style="color: {rsi_color}; font-weight: bold;">
+                    {rsi_status}
+                </div>
+            </div>
+            ''', unsafe_allow_html=True)
 
         with col4:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            vol_status = "🔴 Alta" if volatilidade > 3 else "🟡 Média" if volatilidade > 1.5 else "🟢 Baixa"
-            st.metric("📉 Volatilidade", f"{volatilidade:.2f}%", vol_status)
-            st.markdown('</div>', unsafe_allow_html=True)
+            if volatilidade > 3:
+                vol_color = "#FF6B6B"
+                vol_status = "🔴 Alta"
+            elif volatilidade > 1.5:
+                vol_color = "#FFC107"
+                vol_status = "🟡 Média"
+            else:
+                vol_color = "#00D4AA"
+                vol_status = "🟢 Baixa"
+            
+            st.markdown(f'''
+            <div class="metric-card">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 1.2rem;">📉</span>
+                    <span style="margin-left: 8px; font-weight: bold; color: #666;">Volatilidade</span>
+                </div>
+                <div style="font-size: 2rem; font-weight: bold; color: #2c3e50; margin-bottom: 4px;">
+                    {volatilidade:.2f}%
+                </div>
+                <div style="color: {vol_color}; font-weight: bold;">
+                    {vol_status}
+                </div>
+            </div>
+            ''', unsafe_allow_html=True)
 
         with col5:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric(
-                "📅 Var. Mensal", 
-                f"{variacao_mensal:+.2f}%",
-                "📈 Positiva" if variacao_mensal > 0 else "📉 Negativa" if variacao_mensal < 0 else "➡️ Estável"
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
+            if variacao_mensal > 0:
+                mensal_color = "#00D4AA"
+                mensal_status = "📈 Positiva"
+                mensal_symbol = "▲"
+            elif variacao_mensal < 0:
+                mensal_color = "#FF6B6B"
+                mensal_status = "📉 Negativa"
+                mensal_symbol = "▼"
+            else:
+                mensal_color = "#666"
+                mensal_status = "➡️ Estável"
+                mensal_symbol = "="
+            
+            st.markdown(f'''
+            <div class="metric-card">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 1.2rem;">📅</span>
+                    <span style="margin-left: 8px; font-weight: bold; color: #666;">Var. Mensal</span>
+                </div>
+                <div style="font-size: 2rem; font-weight: bold; color: #2c3e50; margin-bottom: 4px;">
+                    {mensal_symbol} {abs(variacao_mensal):.2f}%
+                </div>
+                <div style="color: {mensal_color}; font-weight: bold;">
+                    {mensal_status}
+                </div>
+            </div>
+            ''', unsafe_allow_html=True)
 
         # Gráfico principal melhorado
         st.markdown("### 📈 Análise Gráfica Avançada")
@@ -1385,20 +1495,61 @@ if ticker_selecionado:
                         
                         with col1:
                             accuracy = metricas.get('accuracy', 0)
-                            color = "🟢" if accuracy > 0.7 else "🟡" if accuracy > 0.6 else "🔴"
-                            st.metric(f"{color} Acurácia", f"{accuracy:.1%}")
+                            color = "#00D4AA" if accuracy > 0.7 else "#FFC107" if accuracy > 0.6 else "#FF6B6B"
+                            emoji = "🟢" if accuracy > 0.7 else "🟡" if accuracy > 0.6 else "🔴"
+                            st.markdown(f'''
+                            <div class="metric-card">
+                                <div style="text-align: center;">
+                                    <div style="font-size: 1.5rem; margin-bottom: 8px;">{emoji}</div>
+                                    <div style="font-size: 1.8rem; font-weight: bold; color: {color}; margin-bottom: 4px;">
+                                        {accuracy:.1%}
+                                    </div>
+                                    <div style="color: #666; font-weight: bold;">Acurácia</div>
+                                </div>
+                            </div>
+                            ''', unsafe_allow_html=True)
                         
                         with col2:
                             precision = metricas.get('precision', 0)
-                            st.metric("🎯 Precisão", f"{precision:.3f}")
+                            st.markdown(f'''
+                            <div class="metric-card">
+                                <div style="text-align: center;">
+                                    <div style="font-size: 1.5rem; margin-bottom: 8px;">🎯</div>
+                                    <div style="font-size: 1.8rem; font-weight: bold; color: #667eea; margin-bottom: 4px;">
+                                        {precision:.3f}
+                                    </div>
+                                    <div style="color: #666; font-weight: bold;">Precisão</div>
+                                </div>
+                            </div>
+                            ''', unsafe_allow_html=True)
                         
                         with col3:
                             recall = metricas.get('recall', 0)
-                            st.metric("📈 Recall", f"{recall:.3f}")
+                            st.markdown(f'''
+                            <div class="metric-card">
+                                <div style="text-align: center;">
+                                    <div style="font-size: 1.5rem; margin-bottom: 8px;">📈</div>
+                                    <div style="font-size: 1.8rem; font-weight: bold; color: #00D4AA; margin-bottom: 4px;">
+                                        {recall:.3f}
+                                    </div>
+                                    <div style="color: #666; font-weight: bold;">Recall</div>
+                                </div>
+                            </div>
+                            ''', unsafe_allow_html=True)
                         
                         with col4:
                             f1_score = metricas.get('f1_score', 0)
-                            st.metric("⚖️ F1 Score", f"{f1_score:.3f}")
+                            st.markdown(f'''
+                            <div class="metric-card">
+                                <div style="text-align: center;">
+                                    <div style="font-size: 1.5rem; margin-bottom: 8px;">⚖️</div>
+                                    <div style="font-size: 1.8rem; font-weight: bold; color: #f093fb; margin-bottom: 4px;">
+                                        {f1_score:.3f}
+                                    </div>
+                                    <div style="color: #666; font-weight: bold;">F1 Score</div>
+                                </div>
+                            </div>
+                            ''', unsafe_allow_html=True)
 
                         # Gráfico de previsão
                         st.markdown("### 📈 Visualização da Previsão")
@@ -1611,37 +1762,108 @@ if ticker_selecionado:
         with col1:
             st.markdown("**🏷️ Médias Móveis**")
             if 'SMA_7' in dados.columns:
-                st.metric("SMA 7", f"R$ {extrair_valor_escalar(dados['SMA_7'].iloc[-1]):.2f}")
+                sma7_val = extrair_valor_escalar(dados['SMA_7'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">SMA 7</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">R$ {sma7_val:.2f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             if 'SMA_21' in dados.columns:
-                st.metric("SMA 21", f"R$ {extrair_valor_escalar(dados['SMA_21'].iloc[-1]):.2f}")
+                sma21_val = extrair_valor_escalar(dados['SMA_21'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">SMA 21</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">R$ {sma21_val:.2f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             if 'EMA_9' in dados.columns:
-                st.metric("EMA 9", f"R$ {extrair_valor_escalar(dados['EMA_9'].iloc[-1]):.2f}")
+                ema9_val = extrair_valor_escalar(dados['EMA_9'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">EMA 9</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">R$ {ema9_val:.2f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
 
         with col2:
             st.markdown("**📈 Momentum**")
             if 'RSI' in dados.columns:
                 rsi_val = extrair_valor_escalar(dados['RSI'].iloc[-1])
-                st.metric("RSI (14)", f"{rsi_val:.2f}")
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">RSI (14)</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">{rsi_val:.2f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             if 'MACD' in dados.columns:
-                st.metric("MACD", f"{extrair_valor_escalar(dados['MACD'].iloc[-1]):.4f}")
+                macd_val = extrair_valor_escalar(dados['MACD'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">MACD</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">{macd_val:.4f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             if 'MACD_signal' in dados.columns:
-                st.metric("MACD Signal", f"{extrair_valor_escalar(dados['MACD_signal'].iloc[-1]):.4f}")
+                macd_signal_val = extrair_valor_escalar(dados['MACD_signal'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">MACD Signal</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">{macd_signal_val:.4f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
 
         with col3:
             st.markdown("**📉 Bollinger Bands**")
             if 'BB_upper' in dados.columns:
-                st.metric("BB Superior", f"R$ {extrair_valor_escalar(dados['BB_upper'].iloc[-1]):.2f}")
+                bb_upper_val = extrair_valor_escalar(dados['BB_upper'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">BB Superior</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">R$ {bb_upper_val:.2f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             if 'BB_lower' in dados.columns:
-                st.metric("BB Inferior", f"R$ {extrair_valor_escalar(dados['BB_lower'].iloc[-1]):.2f}")
+                bb_lower_val = extrair_valor_escalar(dados['BB_lower'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">BB Inferior</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">R$ {bb_lower_val:.2f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             if 'BB_width' in dados.columns:
-                st.metric("Largura BB", f"{extrair_valor_escalar(dados['BB_width'].iloc[-1]):.2f}")
+                bb_width_val = extrair_valor_escalar(dados['BB_width'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">Largura BB</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">{bb_width_val:.2f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
 
         with col4:
             st.markdown("**📊 Volume & Outros**")
             if 'Volume_ratio' in dados.columns:
-                st.metric("Volume Ratio", f"{extrair_valor_escalar(dados['Volume_ratio'].iloc[-1]):.2f}x")
-            st.metric("Volatilidade", f"{extrair_valor_escalar(dados['Close'].pct_change().std() * 100):.2f}%")
-            st.metric("Amplitude H-L", f"{(extrair_valor_escalar(dados['High'].iloc[-1]) - extrair_valor_escalar(dados['Low'].iloc[-1])):.2f}")
+                vol_ratio_val = extrair_valor_escalar(dados['Volume_ratio'].iloc[-1])
+                st.markdown(f'''
+                <div class="mini-metric-card">
+                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">Volume Ratio</div>
+                    <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">{vol_ratio_val:.2f}x</div>
+                </div>
+                ''', unsafe_allow_html=True)
+            volatilidade_val = extrair_valor_escalar(dados['Close'].pct_change().std() * 100)
+            st.markdown(f'''
+            <div class="mini-metric-card">
+                <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">Volatilidade</div>
+                <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">{volatilidade_val:.2f}%</div>
+            </div>
+            ''', unsafe_allow_html=True)
+            amplitude_val = (extrair_valor_escalar(dados['High'].iloc[-1]) - extrair_valor_escalar(dados['Low'].iloc[-1]))
+            st.markdown(f'''
+            <div class="mini-metric-card">
+                <div style="font-size: 0.9rem; color: #666; margin-bottom: 4px;">Amplitude H-L</div>
+                <div style="font-size: 1.3rem; font-weight: bold; color: #2c3e50;">{amplitude_val:.2f}</div>
+            </div>
+            ''', unsafe_allow_html=True)
 
         # Gráficos de indicadores
         st.markdown("#### 📊 Visualização de Indicadores")
@@ -1738,17 +1960,52 @@ if ticker_selecionado:
         else:
             posicao_pct = 50
         
+        # Calcular amplitude
+        amplitude_sr = resistencia - suporte
+        
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("🔴 Resistência", f"R$ {resistencia:.2f}")
+            st.markdown(f'''
+            <div style="background: rgba(255, 100, 100, 0.1); padding: 1rem; border-radius: 10px; text-align: center;">
+                <div style="font-size: 1.2rem; margin-bottom: 8px;">🔴</div>
+                <div style="font-size: 1.5rem; font-weight: bold; color: #e74c3c; margin-bottom: 4px;">
+                    R$ {resistencia:.2f}
+                </div>
+                <div style="color: #666; font-weight: bold;">Resistência</div>
+            </div>
+            ''', unsafe_allow_html=True)
         with col2:
-            st.metric("🟢 Suporte", f"R$ {suporte:.2f}")
+            st.markdown(f'''
+            <div style="background: rgba(100, 255, 100, 0.1); padding: 1rem; border-radius: 10px; text-align: center;">
+                <div style="font-size: 1.2rem; margin-bottom: 8px;">🟢</div>
+                <div style="font-size: 1.5rem; font-weight: bold; color: #27ae60; margin-bottom: 4px;">
+                    R$ {suporte:.2f}
+                </div>
+                <div style="color: #666; font-weight: bold;">Suporte</div>
+            </div>
+            ''', unsafe_allow_html=True)
         with col3:
-            st.metric("📊 Posição", f"{posicao_pct:.1f}%")
+            pos_color = "#e74c3c" if posicao_pct > 80 else "#27ae60" if posicao_pct < 20 else "#f39c12"
+            st.markdown(f'''
+            <div style="background: rgba(255, 255, 255, 0.1); padding: 1rem; border-radius: 10px; text-align: center;">
+                <div style="font-size: 1.2rem; margin-bottom: 8px;">📊</div>
+                <div style="font-size: 1.5rem; font-weight: bold; color: {pos_color}; margin-bottom: 4px;">
+                    {posicao_pct:.1f}%
+                </div>
+                <div style="color: #666; font-weight: bold;">Posição</div>
+            </div>
+            ''', unsafe_allow_html=True)
         with col4:
-            amplitude_sr = resistencia - suporte
-            st.metric("📏 Amplitude S/R", f"R$ {amplitude_sr:.2f}")
+            st.markdown(f'''
+            <div style="background: rgba(255, 255, 255, 0.1); padding: 1rem; border-radius: 10px; text-align: center;">
+                <div style="font-size: 1.2rem; margin-bottom: 8px;">📏</div>
+                <div style="font-size: 1.5rem; font-weight: bold; color: #3498db; margin-bottom: 4px;">
+                    R$ {amplitude_sr:.2f}
+                </div>
+                <div style="color: #666; font-weight: bold;">Amplitude S/R</div>
+            </div>
+            ''', unsafe_allow_html=True)
 
         # Interpretação dos indicadores
         st.markdown("#### 🧠 Interpretação Técnica")
