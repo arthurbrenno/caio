@@ -1350,6 +1350,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Para executar no Colab, salve este código em app.py e execute:
-# !streamlit run app.py --server.port 8501 &
-# Em seguida, use ngrok para expor a porta 8501
+
+if __name__ == "__main__":
+    import subprocess
+    subprocess.run(["streamlit", "run", __file__, "--server.port", "8501"])

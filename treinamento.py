@@ -582,17 +582,19 @@ def criar_modelo_bidirectional_seq2seq(input_shape, learning_rate=0.001):
     # Encoder
     encoder = Bidirectional(LSTM(64, return_sequences=True, dropout=0.2))(x)
     encoder = BatchNormalization()(encoder)
-    encoder = Bidirectional(LSTM(50, return_sequences=True, dropout=0.2))(encoder)
-    encoder = BatchNormalization()(encoder)
+    encoder_sequences = Bidirectional(LSTM(50, return_sequences=True, dropout=0.2))(encoder)
+    encoder_sequences = BatchNormalization()(encoder_sequences)
+    
+    # Get final states for decoder initialization
     encoder_output, forward_h, forward_c, backward_h, backward_c = Bidirectional(
         LSTM(50, return_state=True, dropout=0.2)
-    )(encoder)
+    )(encoder_sequences)
     
     state_h = Concatenate()([forward_h, backward_h])
     state_c = Concatenate()([forward_c, backward_c])
     
-    # Attention mechanism
-    attention = Attention()([encoder_output, encoder_output])
+    # Attention mechanism - use encoder_sequences (3D) instead of encoder_output (2D)
+    attention = Attention()([encoder_sequences, encoder_sequences])
     context = GlobalAveragePooling1D()(attention)
     
     # Decoder
@@ -1232,7 +1234,8 @@ def treinar_modelo_ticker_melhorado(ticker, nome_ticker):
             
             return metricas_finais
         else:
-            print(f"⚠️ Nenhum modelo atingiu a acurácia mínima de 60%")
+            print("⚠️ Nenhum modelo atingiu a acurácia mínima de 60%")
+            print(f"⚠️ Maior acurácia atingida: {best_accuracy}")
             
             # Save best model anyway
             if best_model:
