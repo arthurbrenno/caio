@@ -1018,13 +1018,13 @@ def treinar_modelo_ticker_melhorado(ticker, nome_ticker):
         dados.dropna(inplace=True)
         
         if len(dados) < 800:
-            print(f"❌ Dados insuficientes após processamento")
+            print("❌ Dados insuficientes após processamento")
             return None
         
         print(f"✅ Total de registros: {len(dados)}")
         
         # Create target
-        print(f"\n🎯 Criando target para classificação direcional...")
+        print("\n🎯 Criando target para classificação direcional...")
         dados['Target'] = (dados['Close'].shift(-1) > dados['Close']).astype(int)
         dados = dados.iloc[:-1]  # Remove last row without target
         
@@ -1049,7 +1049,7 @@ def treinar_modelo_ticker_melhorado(ticker, nome_ticker):
         print(f"   📊 Features numéricas: {len(feature_cols)}")
         
         # Advanced feature selection (50 features as research suggests)
-        print(f"   🎯 Selecionando top 50 features...")
+        print("   🎯 Selecionando top 50 features...")
         selected_indices = selecionar_features_avancado(X_data, y_data, feature_cols, n_features=50)
         X_selected = X_data[:, selected_indices]
         selected_features = [feature_cols[i] for i in selected_indices]
