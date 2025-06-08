@@ -1,5 +1,5 @@
 # ============================================
-# CÉLULA 2: INTERFACE STREAMLIT COM IA GENERATIVA
+# STREAMLIT UI MELHORADA - STOCKAI PREDICTOR
 # ============================================
 
 import streamlit as st
@@ -9,7 +9,9 @@ import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+import tensorflow as tf
 from tensorflow.keras.models import load_model
+from tensorflow.keras.layers import Layer
 import joblib
 import ta
 from datetime import datetime, timedelta
@@ -17,7 +19,63 @@ import threading
 import queue
 import os
 import time
-import google.generativeai as genai
+import warnings
+from sklearn.preprocessing import RobustScaler
+import gc
+
+# Suprimir warnings
+warnings.filterwarnings('ignore')
+
+# Configurar TensorFlow para evitar problemas de GPU
+try:
+    tf.config.experimental.set_visible_devices([], 'GPU')
+except:
+    pass
+
+# Definir a classe DAINLayer ANTES de tudo - CORREÇÃO PRINCIPAL
+@tf.keras.utils.register_keras_serializable()
+class DAINLayer(Layer):
+    """Deep Adaptive Input Normalization for non-stationary financial data"""
+    def __init__(self, **kwargs):
+        super(DAINLayer, self).__init__(**kwargs)
+        
+    def build(self, input_shape):
+        self.shift = self.add_weight(name='shift', 
+                                    shape=(input_shape[-1],),
+                                    initializer='zeros',
+                                    trainable=True)
+        self.scale = self.add_weight(name='scale',
+                                    shape=(input_shape[-1],),
+                                    initializer='ones',
+                                    trainable=True)
+        self.gate = self.add_weight(name='gate',
+                                   shape=(input_shape[-1],),
+                                   initializer='ones',
+                                   trainable=True)
+        super().build(input_shape)
+    
+    def call(self, inputs):
+        mean = tf.reduce_mean(inputs, axis=1, keepdims=True)
+        variance = tf.reduce_mean(tf.square(inputs - mean), axis=1, keepdims=True)
+        std = tf.sqrt(variance + 1e-8)
+        
+        normalized = (inputs - mean) / std
+        transformed = normalized * self.scale + self.shift
+        gated = transformed * tf.nn.sigmoid(self.gate)
+        
+        return gated
+    
+    def get_config(self):
+        config = super().get_config()
+        return config
+
+# Tentar importar google.generativeai
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    st.warning("⚠️ Google Generative AI não instalado. Instale com: pip install google-generativeai")
 
 # Configuração da página
 st.set_page_config(
@@ -27,121 +85,173 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS customizado para design moderno e claro
+# CSS customizado melhorado
 st.markdown("""
 <style>
-    /* Tema claro moderno */
+    /* Tema moderno */
     .stApp {
-        background-color: #ffffff;
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
         color: #2c3e50;
     }
 
-    /* Cards customizados - tema claro */
+    /* Cards com efeito glassmorphism */
     .metric-card {
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        background: rgba(255, 255, 255, 0.25);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.18);
         padding: 1.5rem;
-        border-radius: 15px;
-        border: 1px solid #dee2e6;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        border-radius: 20px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
         margin-bottom: 1rem;
         color: #2c3e50;
+        transition: transform 0.3s ease;
     }
 
-    /* Títulos estilizados */
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+    }
+
+    /* Header com gradiente animado */
     .dashboard-header {
-        background: linear-gradient(90deg, #4CAF50 0%, #2196F3 100%);
+        background: linear-gradient(45deg, #667eea, #764ba2, #f093fb, #f5576c);
+        background-size: 400% 400%;
+        animation: gradient 15s ease infinite;
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-size: 2.5rem;
+        font-size: 3rem;
         font-weight: bold;
         text-align: center;
         margin-bottom: 2rem;
     }
 
-    /* Botões customizados */
+    @keyframes gradient {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+
+    /* Botões com efeito moderno */
     .stButton > button {
-        background: linear-gradient(90deg, #4CAF50 0%, #2196F3 100%);
+        background: linear-gradient(45deg, #667eea, #764ba2);
         color: white;
         border: none;
-        padding: 0.5rem 2rem;
+        padding: 0.75rem 2rem;
         border-radius: 25px;
         font-weight: bold;
         transition: all 0.3s ease;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        text-transform: uppercase;
+        letter-spacing: 1px;
     }
 
     .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
+        transform: translateY(-3px);
+        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.6);
+        background: linear-gradient(45deg, #764ba2, #667eea);
     }
 
-    /* Métricas destacadas */
+    /* Métricas destacadas com animação */
     .big-metric {
-        font-size: 2.5rem;
+        font-size: 3rem;
         font-weight: bold;
-        color: #4CAF50;
-    }
-
-    /* Cards de insight - tema claro */
-    .insight-card {
-        background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-        color: #1565c0;
-        border: 1px solid #90caf9;
-    }
-
-    /* Sidebar styling */
-    .css-1d391kg {
-        background-color: #f8f9fa;
-    }
-
-    /* Ajustar texto da sidebar */
-    .css-1d391kg .stMarkdown {
-        color: #2c3e50;
-    }
-
-    /* Métricas do Streamlit */
-    [data-testid="metric-container"] {
-        background-color: #ffffff;
-        border: 1px solid #dee2e6;
-        border-radius: 10px;
-        padding: 1rem;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-    }
-
-    /* Expander styling */
-    .streamlit-expanderHeader {
-        background-color: #f8f9fa;
-        border-radius: 10px;
-    }
-
-    /* Animação de loading */
-    .loading-animation {
-        animation: pulse 1.5s ease-in-out infinite;
+        text-align: center;
+        animation: pulse 2s infinite;
     }
 
     @keyframes pulse {
-        0% { opacity: 0.6; }
+        0% { transform: scale(1); }
+        50% { transform: scale(1.05); }
+        100% { transform: scale(1); }
+    }
+
+    /* Cards de insight melhorados */
+    .insight-card {
+        background: rgba(255, 255, 255, 0.9);
+        padding: 2rem;
+        border-radius: 20px;
+        margin: 1rem 0;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        border-left: 5px solid #667eea;
+        transition: all 0.3s ease;
+    }
+
+    .insight-card:hover {
+        transform: translateX(5px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
+    }
+
+    /* Sidebar aprimorada */
+    .css-1d391kg {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+    }
+
+    /* Status indicators */
+    .status-success {
+        color: #27ae60;
+        font-weight: bold;
+    }
+
+    .status-warning {
+        color: #f39c12;
+        font-weight: bold;
+    }
+
+    .status-error {
+        color: #e74c3c;
+        font-weight: bold;
+    }
+
+    /* Loading animation melhorada */
+    .loading-pulse {
+        animation: loading-pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes loading-pulse {
+        0%, 100% { opacity: 0.5; }
         50% { opacity: 1; }
-        100% { opacity: 0.6; }
     }
 
-    /* Ajustar cores dos warnings e erros */
-    .stAlert > div {
-        border-radius: 10px;
-    }
-
-    /* Tabs styling */
+    /* Tabs estilizadas */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        padding: 0.5rem;
+        border-radius: 15px;
     }
 
     .stTabs [data-baseweb="tab"] {
-        border-radius: 10px 10px 0 0;
-        padding: 0.5rem 1rem;
+        border-radius: 12px;
+        padding: 0.75rem 1.5rem;
+        font-weight: bold;
+        transition: all 0.3s ease;
+    }
+
+    /* Alertas personalizados */
+    .custom-alert {
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        border-left: 4px solid;
+    }
+
+    .alert-success {
+        background-color: #d4edda;
+        border-left-color: #28a745;
+        color: #155724;
+    }
+
+    .alert-warning {
+        background-color: #fff3cd;
+        border-left-color: #ffc107;
+        color: #856404;
+    }
+
+    .alert-error {
+        background-color: #f8d7da;
+        border-left-color: #dc3545;
+        color: #721c24;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -153,488 +263,519 @@ if 'insights_data' not in st.session_state:
     st.session_state.insights_data = {}
 if 'model_configured' not in st.session_state:
     st.session_state.model_configured = False
+if 'last_ticker' not in st.session_state:
+    st.session_state.last_ticker = None
+if 'model_cache' not in st.session_state:
+    st.session_state.model_cache = {}
+if 'loading_logs' not in st.session_state:
+    st.session_state.loading_logs = []
+if 'verbose_mode' not in st.session_state:
+    st.session_state.verbose_mode = False
 
-# Configurar Google API Key
-GOOGLE_API_KEY = st.sidebar.text_input(
-    "🔑 Google API Key",
-    type="password",
-    help="Insira sua chave da API do Google para usar IA generativa"
-)
-
-# === Adicionar configurações do treinamento ===
+# Configurações dos índices de mercado (igual ao treinamento)
 MARKET_INDICES = {
     '^BVSP': 'Ibovespa',
     '^DJI': 'Dow Jones',
     'CL=F': 'Petróleo WTI',
-    'BRL=X': 'USD/BRL'
+    'BRL=X': 'USD/BRL',
+    '^VIX': 'VIX',
+    'GC=F': 'Ouro'
 }
 
-# === Função para coletar dados de mercado (igual ao treinamento) ===
-def coletar_dados_mercado(inicio, fim):
-    """Coleta dados dos índices de mercado para usar como features adicionais"""
+# === FUNÇÕES AUXILIARES MELHORADAS ===
+
+def extrair_valor_escalar(data):
+    """Extrai valor escalar de qualquer tipo de dado pandas/numpy"""
+    try:
+        if data is None:
+            return 0.0
+        if isinstance(data, (int, float)):
+            return float(data)
+        if isinstance(data, np.ndarray):
+            return float(data.flatten()[0]) if len(data.flatten()) > 0 else 0.0
+        if isinstance(data, pd.Series):
+            return float(data.iloc[0]) if len(data) > 0 else 0.0
+        if isinstance(data, pd.DataFrame):
+            return float(data.iloc[0, 0]) if not data.empty else 0.0
+        return float(data)
+    except (ValueError, TypeError, IndexError):
+        return 0.0
+
+def log_verbose(message, log_type="info"):
+    """Adiciona log apenas se modo verboso estiver ativo"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    log_entry = f"[{timestamp}] {message}"
+    st.session_state.loading_logs.append((log_type, log_entry))
+    
+    if st.session_state.verbose_mode:
+        if log_type == "info":
+            st.info(message)
+        elif log_type == "success":
+            st.success(message)
+        elif log_type == "warning":
+            st.warning(message)
+        elif log_type == "error":
+            st.error(message)
+
+def verificar_saude_dados(dados):
+    """Verifica a qualidade dos dados carregados"""
+    if dados is None or dados.empty:
+        return False, "Dados vazios"
+    
+    problemas = []
+    
+    # Verificar colunas essenciais
+    cols_essenciais = ['Open', 'High', 'Low', 'Close', 'Volume']
+    cols_faltantes = [col for col in cols_essenciais if col not in dados.columns]
+    if cols_faltantes:
+        problemas.append(f"Colunas faltantes: {cols_faltantes}")
+    
+    # Verificar valores NaN excessivos
+    nan_pct = dados.isnull().sum().sum() / (len(dados) * len(dados.columns)) * 100
+    if nan_pct > 20:
+        problemas.append(f"Muitos valores NaN: {nan_pct:.1f}%")
+    
+    # Verificar quantidade de dados
+    if len(dados) < 50:
+        problemas.append(f"Poucos dados: {len(dados)} registros")
+    
+    # Verificar preços zerados
+    if 'Close' in dados.columns:
+        zeros_pct = (dados['Close'] == 0).sum() / len(dados) * 100
+        if zeros_pct > 5:
+            problemas.append(f"Muitos preços zerados: {zeros_pct:.1f}%")
+    
+    if problemas:
+        return False, "; ".join(problemas)
+    
+    return True, "Dados OK"
+
+@st.cache_data(ttl=300)  # Cache por 5 minutos
+def coletar_dados_mercado_expandido(inicio, fim):
+    """Coleta dados expandidos dos índices de mercado (versão silenciosa)"""
     market_data = {}
     valid_data = []
     
-    for symbol, name in MARKET_INDICES.items():
+    for i, (symbol, name) in enumerate(MARKET_INDICES.items()):
         try:
             data = yf.download(symbol, start=inicio, end=fim, progress=False)
+            
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = [col[0] if isinstance(col, tuple) else col for col in data.columns]
+            
             if len(data) > 0 and 'Close' in data.columns:
-                # Flatten multi-level columns if they exist
-                if isinstance(data.columns, pd.MultiIndex):
-                    data.columns = [col[0] if isinstance(col, tuple) else col for col in data.columns]
-                
-                # Criar DataFrame temporário com os dados deste símbolo
                 temp_df = pd.DataFrame(index=data.index)
-                temp_df[f'{name}_Close'] = data['Close']
-                temp_df[f'{name}_Return'] = data['Close'].pct_change()
+                
+                close_series = pd.Series(data['Close'].values, index=data.index)
+                high_series = pd.Series(data.get('High', data['Close']).values, index=data.index)
+                low_series = pd.Series(data.get('Low', data['Close']).values, index=data.index)
+                volume_series = pd.Series(data.get('Volume', 0).values, index=data.index)
+                
+                # Múltiplas features para cada índice
+                temp_df[f'{name}_Close'] = close_series
+                temp_df[f'{name}_Volume'] = volume_series
+                temp_df[f'{name}_Return'] = close_series.pct_change()
+                temp_df[f'{name}_Log_Return'] = np.log(close_series / close_series.shift(1))
+                temp_df[f'{name}_Volatility'] = temp_df[f'{name}_Return'].rolling(20).std()
+                temp_df[f'{name}_SMA20'] = close_series.rolling(20).mean()
+                
+                try:
+                    temp_df[f'{name}_RSI'] = ta.momentum.rsi(close_series, window=14)
+                except:
+                    temp_df[f'{name}_RSI'] = 50.0
                 
                 valid_data.append(temp_df)
-                print(f"✅ Dados de {name} coletados")
+                log_verbose(f"✅ Dados de {name} coletados", "success")
+                
         except Exception as e:
-            print(f"⚠️ Erro ao coletar {name}: {e}")
+            log_verbose(f"⚠️ Erro ao coletar {name}: {str(e)}", "warning")
     
-    # Se temos dados válidos, concatenar todos
     if valid_data:
         result_df = valid_data[0]
         for df in valid_data[1:]:
             result_df = result_df.join(df, how='outer')
+        log_verbose(f"✅ Dados de mercado adicionados: {len(result_df.columns)} features", "success")
         return result_df
     else:
-        # Retornar DataFrame vazio se não conseguimos coletar nenhum dado
-        print("⚠️ Nenhum dado de mercado foi coletado")
+        log_verbose("⚠️ Nenhum dado de mercado coletado", "warning")
         return pd.DataFrame()
 
-# === Função para adicionar indicadores técnicos compatível com treinamento ===
-def adicionar_indicadores_tecnicos_completos(df):
-    """Adiciona indicadores técnicos compatíveis com o modelo treinado"""
+def aplicar_wavelet_denoising(signal, wavelet='db4', level=1):
+    """Aplica wavelet denoising (versão simplificada)"""
     try:
-        if df is None or df.empty:
-            return None
-        
+        import pywt
+        coeff = pywt.wavedec(signal, wavelet, mode="per")
+        sigma = (1/0.6745) * np.median(np.abs(coeff[-level]))
+        uthresh = sigma * np.sqrt(2 * np.log(len(signal)))
+        coeff[1:] = (pywt.threshold(i, value=uthresh, mode='soft') for i in coeff[1:])
+        return pywt.waverec(coeff, wavelet, mode='per')[:len(signal)]
+    except:
+        return signal
+
+def adicionar_indicadores_tecnicos_completos(df):
+    """Adiciona conjunto completo de indicadores técnicos compatível com treinamento (versão silenciosa)"""
+    if df is None or df.empty:
+        return None
+    
+    try:
         df = df.copy()
         
         # Verificar colunas necessárias
         required_columns = ['Close', 'Volume', 'High', 'Low', 'Open']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
-            st.error(f"❌ Colunas obrigatórias ausentes: {missing_columns}")
+            log_verbose(f"❌ Colunas obrigatórias ausentes: {missing_columns}", "error")
             return None
         
-        # Extrair séries
-        def extract_series(column_data):
+        # Extrair séries de forma robusta
+        def extract_and_clean_series(column_data, fill_value=None):
             if isinstance(column_data, pd.DataFrame):
                 series_data = column_data.iloc[:, 0]
             else:
                 series_data = column_data
-            return series_data.squeeze()
+            series_data = series_data.squeeze()
+            
+            if fill_value is not None:
+                series_data = series_data.fillna(fill_value)
+            else:
+                series_data = series_data.ffill().bfill()
+            
+            return series_data
         
-        close = extract_series(df['Close']).ffill().bfill()
-        high = extract_series(df['High']).ffill().bfill()
-        low = extract_series(df['Low']).ffill().bfill()
-        volume = extract_series(df['Volume']).fillna(0)
-        open_price = extract_series(df['Open']).ffill().bfill()
+        close = extract_and_clean_series(df['Close'])
+        high = extract_and_clean_series(df['High'])
+        low = extract_and_clean_series(df['Low'])
+        volume = extract_and_clean_series(df['Volume'], 0)
+        open_price = extract_and_clean_series(df['Open'])
         
         if len(close) < 30:
-            st.error(f"❌ Dados insuficientes para calcular indicadores: {len(close)}")
+            log_verbose(f"❌ Dados insuficientes: {len(close)} registros. Mínimo: 30", "error")
             return None
         
-        # Médias móveis essenciais (compatível com treinamento)
-        df['SMA_5'] = ta.trend.sma_indicator(close, window=5)
-        df['SMA_20'] = ta.trend.sma_indicator(close, window=20)
-        df['EMA_9'] = ta.trend.ema_indicator(close, window=9)
-        df['EMA_21'] = ta.trend.ema_indicator(close, window=21)
+        # Aplicar wavelet denoising
+        close_denoised = aplicar_wavelet_denoising(close.values)
+        high_denoised = aplicar_wavelet_denoising(high.values)
+        low_denoised = aplicar_wavelet_denoising(low.values)
         
-        # Razões de médias móveis
-        df['SMA_ratio'] = df['SMA_5'] / df['SMA_20'].replace(0, np.nan)
-        df['Price_to_SMA20'] = close / df['SMA_20'].replace(0, np.nan)
+        close_series = pd.Series(close_denoised, index=close.index)
+        high_series = pd.Series(high_denoised, index=high.index)
+        low_series = pd.Series(low_denoised, index=low.index)
+        volume_series = pd.Series(volume.values, index=volume.index)
         
-        # RSI
-        df['RSI'] = ta.momentum.rsi(close, window=14)
+        indicators_count = 0
         
-        # MACD
-        macd = ta.trend.MACD(close)
-        df['MACD_diff'] = macd.macd_diff()
+        # === Price Transformations ===
+        try:
+            df['Log_Return'] = np.log(close_series / close_series.shift(1))
+            df['Log_Return_2'] = np.log(close_series / close_series.shift(2))
+            df['Log_Return_5'] = np.log(close_series / close_series.shift(5))
+            df['Log_Return_10'] = np.log(close_series / close_series.shift(10))
+            df['Log_Return_20'] = np.log(close_series / close_series.shift(20))
+            indicators_count += 5
+        except:
+            pass
         
-        # Bollinger Bands
-        bb = ta.volatility.BollingerBands(close, window=20)
-        df['BB_width'] = (bb.bollinger_hband() - bb.bollinger_lband()) / close.replace(0, np.nan)
-        df['BB_position'] = (close - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband()).replace(0, np.nan)
+        # === Moving Averages ===
+        for period in [5, 10, 15, 20, 30, 50, 100, 200]:
+            try:
+                df[f'SMA_{period}'] = ta.trend.sma_indicator(close_series, window=period)
+                df[f'EMA_{period}'] = ta.trend.ema_indicator(close_series, window=period)
+                df[f'Price_to_SMA_{period}'] = close_series / df[f'SMA_{period}']
+                df[f'Price_to_EMA_{period}'] = close_series / df[f'EMA_{period}']
+                indicators_count += 4
+            except:
+                continue
         
-        # Volume indicators
-        volume_sma = ta.trend.sma_indicator(volume, window=20)
-        df['Volume_ratio'] = volume / volume_sma.replace(0, np.nan)
-        df['OBV'] = ta.volume.on_balance_volume(close, volume)
-        df['OBV_EMA'] = ta.trend.ema_indicator(df['OBV'], window=20)
+        # === Momentum Indicators ===
+        for period in [7, 14, 21, 28]:
+            try:
+                df[f'RSI_{period}'] = ta.momentum.rsi(close_series, window=period)
+                df[f'RSI_{period}_Signal'] = df[f'RSI_{period}'].rolling(3).mean()
+                indicators_count += 2
+            except:
+                continue
         
-        # Volatilidade
-        df['ATR'] = ta.volatility.average_true_range(high, low, close, window=14)
-        df['Volatility'] = close.pct_change().rolling(20).std()
+        # MACD variations
+        macd_configs = [(12, 26, 9), (5, 35, 5), (8, 17, 9)]
+        for i, (fast, slow, signal) in enumerate(macd_configs):
+            try:
+                macd = ta.trend.MACD(close_series, window_slow=slow, window_fast=fast, window_sign=signal)
+                df[f'MACD_{i+1}'] = macd.macd()
+                df[f'MACD_Signal_{i+1}'] = macd.macd_signal()
+                df[f'MACD_Diff_{i+1}'] = macd.macd_diff()
+                indicators_count += 3
+            except:
+                continue
         
-        # Returns
-        df['Return_1'] = close.pct_change(1)
-        df['Return_5'] = close.pct_change(5)
-        df['Return_20'] = close.pct_change(20)
+        # === Volatility Indicators ===
+        for period in [10, 20, 30]:
+            try:
+                bb = ta.volatility.BollingerBands(close_series, window=period, window_dev=2)
+                df[f'BB_Upper_{period}'] = bb.bollinger_hband()
+                df[f'BB_Lower_{period}'] = bb.bollinger_lband()
+                df[f'BB_Middle_{period}'] = bb.bollinger_mavg()
+                df[f'BB_Width_{period}'] = bb.bollinger_wband()
+                df[f'BB_Position_{period}'] = bb.bollinger_pband()
+                indicators_count += 5
+            except:
+                continue
         
-        # Price patterns
-        df['HL_ratio'] = (high - low) / close.replace(0, np.nan)
-        df['CO_ratio'] = (close - open_price) / open_price.replace(0, np.nan)
+        for period in [7, 14, 21, 28]:
+            try:
+                df[f'ATR_{period}'] = ta.volatility.average_true_range(high_series, low_series, close_series, window=period)
+                df[f'ATR_Ratio_{period}'] = df[f'ATR_{period}'] / close_series
+                indicators_count += 2
+            except:
+                continue
         
-        # Trend indicators
-        df['Trend_20'] = (close - close.shift(20)) / close.shift(20).replace(0, np.nan)
-        df['Above_SMA20'] = (close > df['SMA_20']).astype(int)
+        # === Volume Indicators ===
+        try:
+            df['OBV'] = ta.volume.on_balance_volume(close_series, volume_series)
+            df['OBV_EMA'] = ta.trend.ema_indicator(df['OBV'], window=20)
+            df['CMF'] = ta.volume.chaikin_money_flow(high_series, low_series, close_series, volume_series)
+            df['FI'] = ta.volume.force_index(close_series, volume_series)
+            indicators_count += 4
+            
+            for period in [7, 14, 21]:
+                df[f'MFI_{period}'] = ta.volume.money_flow_index(high_series, low_series, close_series, volume_series, window=period)
+                indicators_count += 1
+            
+            df['VWAP'] = ta.volume.volume_weighted_average_price(high_series, low_series, close_series, volume_series)
+            df['Price_to_VWAP'] = close_series / df['VWAP']
+            indicators_count += 2
+        except:
+            pass
         
-        # Manter indicadores originais para compatibilidade com UI
-        df['SMA_7'] = ta.trend.sma_indicator(close, window=7)
-        df['SMA_21'] = df['SMA_20']  # Alias
+        # === Trend Indicators ===
+        for period in [7, 14, 21, 28]:
+            try:
+                adx = ta.trend.ADXIndicator(high_series, low_series, close_series, window=period)
+                df[f'ADX_{period}'] = adx.adx()
+                df[f'ADX_Pos_{period}'] = adx.adx_pos()
+                df[f'ADX_Neg_{period}'] = adx.adx_neg()
+                indicators_count += 3
+            except:
+                continue
+        
+        # === Time-based Features ===
+        df['Day_of_Week'] = df.index.dayofweek
+        df['Day_of_Month'] = df.index.day
+        df['Week_of_Year'] = df.index.isocalendar().week
+        df['Month'] = df.index.month
+        df['Quarter'] = df.index.quarter
+        df['Is_Month_Start'] = (df.index.day <= 5).astype(int)
+        df['Is_Month_End'] = (df.index.day >= 25).astype(int)
+        df['Is_Quarter_End'] = ((df.index.month % 3 == 0) & (df.index.day >= 25)).astype(int)
+        indicators_count += 8
+        
+        # === Statistical Features ===
+        for window in [5, 10, 20, 30, 60]:
+            try:
+                df[f'Rolling_Mean_{window}'] = close_series.rolling(window).mean()
+                df[f'Rolling_Std_{window}'] = close_series.rolling(window).std()
+                df[f'Rolling_Skew_{window}'] = close_series.rolling(window).skew()
+                df[f'Rolling_Kurt_{window}'] = close_series.rolling(window).kurt()
+                df[f'Rolling_Min_{window}'] = close_series.rolling(window).min()
+                df[f'Rolling_Max_{window}'] = close_series.rolling(window).max()
+                indicators_count += 6
+            except:
+                continue
+        
+        # === Pattern Recognition ===
+        df['Body_Size'] = abs(close_series - open_price) / close_series
+        df['Upper_Shadow'] = (high_series - np.maximum(close_series, open_price)) / close_series
+        df['Lower_Shadow'] = (np.minimum(close_series, open_price) - low_series) / close_series
+        indicators_count += 3
+        
+        # === Crossover Signals ===
+        try:
+            df['Golden_Cross'] = ((df['SMA_50'] > df['SMA_200']) & 
+                                 (df['SMA_50'].shift(1) <= df['SMA_200'].shift(1))).astype(int)
+            df['Death_Cross'] = ((df['SMA_50'] < df['SMA_200']) & 
+                                (df['SMA_50'].shift(1) >= df['SMA_200'].shift(1))).astype(int)
+            indicators_count += 2
+        except:
+            df['Golden_Cross'] = 0
+            df['Death_Cross'] = 0
+        
+        # Manter compatibilidade com UI antiga
+        df['SMA_7'] = df.get('SMA_5', ta.trend.sma_indicator(close_series, window=7))
+        df['SMA_21'] = df.get('SMA_20', ta.trend.sma_indicator(close_series, window=21))
+        df['EMA_9'] = df.get('EMA_10', ta.trend.ema_indicator(close_series, window=9))
+        df['RSI'] = df.get('RSI_14', ta.momentum.rsi(close_series, window=14))
+        
+        macd = ta.trend.MACD(close_series)
         df['MACD'] = macd.macd()
         df['MACD_signal'] = macd.macd_signal()
+        
+        bb = ta.volatility.BollingerBands(close_series, window=20)
         df['BB_upper'] = bb.bollinger_hband()
         df['BB_lower'] = bb.bollinger_lband()
+        df['BB_width'] = df['BB_upper'] - df['BB_lower']
         
+        # Volume indicators para compatibilidade
+        volume_sma = ta.trend.sma_indicator(volume_series, window=10)
+        df['Volume_ratio'] = volume_series / volume_sma.replace(0, np.nan)
+        df['High_Low_pct'] = (high_series - low_series) / close_series * 100
+        df['Price_change'] = close_series.pct_change()
+        
+        log_verbose(f"✅ {indicators_count}+ indicadores técnicos calculados", "success")
         return df
         
     except Exception as e:
-        st.error(f"❌ Erro ao calcular indicadores técnicos: {str(e)}")
+        log_verbose(f"❌ Erro ao calcular indicadores técnicos: {str(e)}", "error")
         return None
 
-# Funções auxiliares
-def extrair_valor_escalar(series_ou_df):
-    """Extrai um valor escalar de uma Series ou DataFrame de forma robusta"""
-    try:
-        if isinstance(series_ou_df, pd.DataFrame):
-            if series_ou_df.empty:
-                return 0.0
-            return float(series_ou_df.iloc[0, 0])
-        elif isinstance(series_ou_df, pd.Series):
-            if series_ou_df.empty:
-                return 0.0
-            return float(series_ou_df.iloc[0])
-        elif isinstance(series_ou_df, (int, float, np.number)):
-            return float(series_ou_df)
-        elif hasattr(series_ou_df, 'values'):
-            # Para arrays numpy ou outros tipos array-like
-            return float(series_ou_df.values.flatten()[0])
-        else:
-            return float(series_ou_df)
-    except (IndexError, TypeError, ValueError) as e:
-        st.warning(f"⚠️ Erro ao extrair valor escalar: {e}. Retornando 0.0")
-        return 0.0
-
-def adicionar_indicadores_tecnicos(df):
-    """Adiciona indicadores técnicos ao DataFrame com tratamento robusto de erro"""
-    try:
-        if df is None or df.empty:
-            st.error("❌ DataFrame vazio ou None fornecido para indicadores técnicos")
-            return None
-        
-        df = df.copy()
-        
-        # Verificar se as colunas necessárias existem
-        required_columns = ['Close', 'Volume', 'High', 'Low']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            st.error(f"❌ Colunas necessárias ausentes para indicadores técnicos: {missing_columns}")
-            return None
-        
-        # Garantir que os dados sejam Series 1D e tratar valores NaN
-        # Corrigindo o warning de depreciação do fillna(method=)
-        def extract_series(column_data):
-            """Extrai uma Series de uma coluna que pode ser multi-dimensional"""
-            if isinstance(column_data, pd.DataFrame):
-                # Se for DataFrame, pegar a primeira coluna
-                series_data = column_data.iloc[:, 0]
-            else:
-                series_data = column_data
-            return series_data.squeeze()
-        
-        close_prices = extract_series(df['Close']).ffill().bfill()
-        volume = extract_series(df['Volume']).fillna(0)
-        high_prices = extract_series(df['High']).ffill().bfill()
-        low_prices = extract_series(df['Low']).ffill().bfill()
-        
-        # Verificar se temos dados suficientes
-        if len(close_prices) < 21:  # Precisamos de pelo menos 21 dados para SMA_21
-            st.error(f"❌ Dados insuficientes para calcular indicadores. Necessário: 21, disponível: {len(close_prices)}")
-            return None
-        
-        # Calcular indicadores com tratamento de erro individual
-        try:
-            # Médias Móveis
-            df['SMA_7'] = ta.trend.sma_indicator(close_prices, window=7)
-            df['SMA_21'] = ta.trend.sma_indicator(close_prices, window=21)
-            df['EMA_9'] = ta.trend.ema_indicator(close_prices, window=9)
-        except Exception as e:
-            st.error(f"❌ Erro ao calcular médias móveis: {str(e)}")
-            return None
-        
-        try:
-            # RSI
-            df['RSI'] = ta.momentum.rsi(close_prices, window=14)
-        except Exception as e:
-            st.error(f"❌ Erro ao calcular RSI: {str(e)}")
-            return None
-        
-        try:
-            # MACD
-            macd = ta.trend.MACD(close_prices)
-            df['MACD'] = macd.macd()
-            df['MACD_signal'] = macd.macd_signal()
-        except Exception as e:
-            st.error(f"❌ Erro ao calcular MACD: {str(e)}")
-            return None
-        
-        try:
-            # Bollinger Bands
-            bollinger = ta.volatility.BollingerBands(close_prices)
-            df['BB_upper'] = bollinger.bollinger_hband()
-            df['BB_lower'] = bollinger.bollinger_lband()
-            df['BB_width'] = df['BB_upper'] - df['BB_lower']
-        except Exception as e:
-            st.error(f"❌ Erro ao calcular Bollinger Bands: {str(e)}")
-            return None
-        
-        try:
-            # Volume indicators - CORREÇÃO PRINCIPAL
-            volume_sma = ta.trend.sma_indicator(volume, window=10)
-            
-            # Garantir que volume_sma seja uma Series e tratar divisão por zero
-            if isinstance(volume_sma, pd.DataFrame):
-                volume_sma = volume_sma.iloc[:, 0]
-            
-            df['Volume_SMA'] = volume_sma
-            
-            # Calcular Volume_ratio de forma segura
-            volume_ratio = volume / volume_sma.replace(0, np.nan)
-            df['Volume_ratio'] = volume_ratio
-            
-        except Exception as e:
-            st.error(f"❌ Erro ao calcular indicadores de volume: {str(e)}")
-            return None
-        
-        try:
-            # Price features
-            df['High_Low_pct'] = (high_prices - low_prices) / close_prices * 100
-            df['Price_change'] = close_prices.pct_change()
-        except Exception as e:
-            st.error(f"❌ Erro ao calcular features de preço: {str(e)}")
-            return None
-        
-        # Remover NaN values
-        initial_length = len(df)
-        df.dropna(inplace=True)
-        final_length = len(df)
-        
-        if final_length == 0:
-            st.error("❌ Todos os dados foram removidos após calcular indicadores técnicos")
-            return None
-        
-        if final_length < initial_length * 0.5:  # Se perdemos mais de 50% dos dados
-            st.warning(f"⚠️ Muitos dados foram removidos após calcular indicadores: {initial_length} → {final_length}")
-        
-        return df
-        
-    except Exception as e:
-        st.error(f"❌ Erro geral ao calcular indicadores técnicos: {str(e)}")
-        return None
-
-@st.cache_data
+@st.cache_data(ttl=300)
 def carregar_dados_ticker(ticker, periodo='1y'):
-    """Carrega dados do ticker com cache e melhor tratamento de erro"""
+    """Carrega dados do ticker com cache melhorado (versão silenciosa)"""
     try:
-        # Verificar se o ticker é válido
-        if not ticker or not isinstance(ticker, str):
-            st.error(f"❌ Ticker inválido: {ticker}")
-            return None
+        # Limpar logs anteriores
+        if not st.session_state.verbose_mode:
+            st.session_state.loading_logs = []
         
-        # Log para debug
-        st.info(f"🔄 Baixando dados para {ticker} (período: {periodo})...")
+        log_verbose(f"🔄 Carregando dados para {ticker} (período: {periodo})...")
         
         # Calcular datas
         fim = datetime.now()
-        if periodo == '1mo':
-            inicio = fim - timedelta(days=30)
-        elif periodo == '3mo':
-            inicio = fim - timedelta(days=90)
-        elif periodo == '6mo':
-            inicio = fim - timedelta(days=180)
-        elif periodo == '1y':
-            inicio = fim - timedelta(days=365)
-        elif periodo == '2y':
-            inicio = fim - timedelta(days=730)
-        elif periodo == '5y':
-            inicio = fim - timedelta(days=1825)
-        else:
-            inicio = fim - timedelta(days=365)
+        periodos_map = {
+            '1mo': 30, '3mo': 90, '6mo': 180,
+            '1y': 365, '2y': 730, '5y': 1825
+        }
+        dias = periodos_map.get(periodo, 365)
+        inicio = fim - timedelta(days=dias)
         
-        # Download dos dados do ticker
+        # Download dos dados principais
         dados = yf.download(
             ticker, 
             start=inicio,
             end=fim,
             progress=False,
             timeout=30,
-            threads=True,
             auto_adjust=False
         )
         
-        # Verificar se dados foram baixados
         if dados is None or dados.empty:
-            st.error(f"❌ Nenhum dado encontrado para {ticker}. Verifique se o ticker está correto.")
+            log_verbose(f"❌ Nenhum dado encontrado para {ticker}", "error")
             return None
         
-        # Flatten multi-level columns if they exist
+        # Flatten columns
         if isinstance(dados.columns, pd.MultiIndex):
             dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
         
-        # Verificar estrutura dos dados
-        required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-        missing_columns = [col for col in required_columns if col not in dados.columns]
-        if missing_columns:
-            st.error(f"❌ Colunas obrigatórias ausentes: {missing_columns}")
+        # Verificar saúde dos dados
+        saude_ok, msg_saude = verificar_saude_dados(dados)
+        if not saude_ok:
+            log_verbose(f"❌ Problemas nos dados: {msg_saude}", "error")
             return None
         
-        # Verificar se há dados suficientes
-        if len(dados) < 50:
-            st.error(f"❌ Dados insuficientes para {ticker}. Apenas {len(dados)} registros encontrados. Mínimo: 50")
-            return None
-        
-        st.success(f"✅ {len(dados)} registros baixados com sucesso para {ticker}")
+        log_verbose(f"✅ {len(dados)} registros baixados com sucesso", "success")
         
         # Coletar dados de mercado
-        st.info("📈 Coletando dados de mercado correlacionados...")
-        dados_mercado = coletar_dados_mercado(inicio, fim)
-        
-        # Alinhar índices e juntar dados
+        log_verbose("📈 Coletando dados de mercado correlacionados...", "info")
+        dados_mercado = coletar_dados_mercado_expandido(inicio, fim)
         if len(dados_mercado) > 0:
             dados = dados.join(dados_mercado, how='left')
-            st.info(f"✅ Dados de mercado adicionados: {list(dados_mercado.columns)}")
         else:
-            st.warning("⚠️ Não foi possível coletar dados de mercado. Usando apenas dados do ticker.")
-        
-        # Processar dados
-        if not isinstance(dados.index, pd.DatetimeIndex):
-            dados = dados.reset_index()
-            if 'Date' in dados.columns:
-                dados.set_index('Date', inplace=True)
-            elif 'Datetime' in dados.columns:
-                dados.set_index('Datetime', inplace=True)
-            else:
-                st.error("❌ Coluna de data não encontrada nos dados")
-                return None
+            log_verbose("⚠️ Não foi possível coletar dados de mercado", "warning")
         
         # Adicionar indicadores técnicos
-        st.info("📊 Calculando indicadores técnicos...")
+        log_verbose("📊 Calculando indicadores técnicos avançados...", "info")
         dados_com_indicadores = adicionar_indicadores_tecnicos_completos(dados)
         
-        # Verificar se indicadores foram calculados
-        if dados_com_indicadores is None or dados_com_indicadores.empty:
-            st.error("❌ Erro ao calcular indicadores técnicos")
+        if dados_com_indicadores is None:
+            log_verbose("❌ Erro ao calcular indicadores técnicos", "error")
             return None
         
-        # Verificar se ainda temos dados suficientes após calcular indicadores
-        if len(dados_com_indicadores) < 30:
-            st.error(f"❌ Dados insuficientes após calcular indicadores: {len(dados_com_indicadores)} registros")
-            return None
-        
-        # Preencher valores faltantes
+        # Limpeza final
+        dados_com_indicadores.replace([np.inf, -np.inf], np.nan, inplace=True)
         dados_com_indicadores.ffill(inplace=True)
         dados_com_indicadores.dropna(inplace=True)
         
-        st.success(f"✅ Indicadores técnicos calculados. {len(dados_com_indicadores)} registros finais")
+        log_verbose(f"✅ Dados carregados: {len(dados_com_indicadores)} registros, {len(dados_com_indicadores.columns)} features", "success")
         return dados_com_indicadores
         
     except Exception as e:
-        error_msg = f"❌ Erro ao carregar dados para {ticker}: {str(e)}"
-        st.error(error_msg)
-        
-        # Sugestões de solução baseadas no tipo de erro
-        if "timeout" in str(e).lower():
-            st.warning("💡 Dica: Problema de conectividade. Tente novamente em alguns segundos.")
-        elif "delisted" in str(e).lower() or "not found" in str(e).lower():
-            st.warning("💡 Dica: Ticker pode estar incorreto ou a ação pode ter sido deslistada.")
-        elif "rate limit" in str(e).lower():
-            st.warning("💡 Dica: Muitas requisições. Aguarde alguns minutos antes de tentar novamente.")
-        else:
-            st.warning("💡 Dica: Verifique sua conexão com a internet e tente novamente.")
-        
-        # Log detalhado do erro para debug
-        st.error(f"Detalhes técnicos: {type(e).__name__}: {str(e)}")
+        log_verbose(f"❌ Erro ao carregar dados: {str(e)}", "error")
         return None
 
-def preparar_dados_para_previsao(dados, metricas):
-    """Prepara dados para previsão, aplicando a mesma lógica do treinamento"""
+def carregar_modelo_completo(ticker):
+    """Carrega modelo com custom objects e cache"""
     try:
-        # Para modelo de classificação direcional, as features são diferentes
-        # Target (Close) deve ser separado das features
-        target_col = 'Close'
+        # Verificar cache
+        if ticker in st.session_state.model_cache:
+            return st.session_state.model_cache[ticker]
         
-        # Features são todas as colunas EXCETO as colunas de preço básicas
-        feature_cols = [col for col in dados.columns if col not in ['Close', 'Open', 'High', 'Low', 'Adj Close']]
+        # Caminhos dos arquivos
+        model_path = f'models/{ticker}_directional_model.keras'
+        scaler_path = f'scalers/{ticker}_directional_scaler.pkl'
+        metrics_path = f'metrics/{ticker}_directional_metrics.pkl'
         
-        st.info(f"📊 Total de features disponíveis: {len(feature_cols)}")
+        # Verificar existência
+        if not all(os.path.exists(path) for path in [model_path, scaler_path, metrics_path]):
+            missing = [path for path in [model_path, scaler_path, metrics_path] if not os.path.exists(path)]
+            return None, None, None, f"Arquivos faltantes: {missing}"
         
-        # Verificar quais features existem nos dados
-        features_disponiveis = [f for f in feature_cols if f in dados.columns]
-        features_faltantes = [f for f in feature_cols if f not in dados.columns]
+        # Carregar métricas
+        metricas = joblib.load(metrics_path)
         
-        if features_faltantes:
-            st.warning(f"⚠️ Features faltantes: {len(features_faltantes)} de {len(feature_cols)}")
-            
-            # Criar features faltantes com valores padrão
-            for feature in features_faltantes:
-                if 'Close' in feature or 'Return' in feature:
-                    dados[feature] = dados['Close'].ffill()
-                elif 'Volume' in feature:
-                    dados[feature] = dados['Volume'].ffill()
-                else:
-                    dados[feature] = 0.0
+        # Carregar scaler
+        scaler = joblib.load(scaler_path)
         
-        # Garantir que todas as features estão presentes
-        dados_features = dados[feature_cols].copy()
+        # Carregar modelo com custom objects
+        custom_objects = {'DAINLayer': DAINLayer}
+        modelo = load_model(model_path, custom_objects=custom_objects, compile=False)
         
-        # Preencher valores NaN restantes
-        dados_features.ffill(inplace=True)
-        dados_features.fillna(0, inplace=True)
+        # Cache
+        st.session_state.model_cache[ticker] = (modelo, scaler, metricas, None)
         
-        # Aplicar seleção de features importantes se disponível
+        return modelo, scaler, metricas, None
+        
+    except Exception as e:
+        error_msg = f"Erro ao carregar modelo: {str(e)}"
+        return None, None, None, error_msg
+
+def preparar_dados_previsao(dados, metricas):
+    """Prepara dados para previsão seguindo exatamente o padrão de treinamento"""
+    try:
+        # Features são todas as colunas EXCETO preços básicos
+        feature_cols = [col for col in dados.columns 
+                       if col not in ['Close', 'Open', 'High', 'Low', 'Adj Close', 'Volume']]
+        
+        # Usar features selecionadas se disponível
         if 'feature_names' in metricas:
             feature_names = metricas['feature_names']
             
-            st.info(f"🎯 Usando {len(feature_names)} features selecionadas durante o treinamento")
+            # Preencher features faltantes com 0
+            for feature in feature_names:
+                if feature not in dados.columns:
+                    dados[feature] = 0.0
             
-            # Verificar se as features selecionadas existem
-            features_selecionadas_disponiveis = [f for f in feature_names if f in dados_features.columns]
-            
-            if len(features_selecionadas_disponiveis) < len(feature_names):
-                st.warning(f"⚠️ Algumas features selecionadas estão faltando. Usando {len(features_selecionadas_disponiveis)} de {len(feature_names)}")
-                
-                # Preencher features selecionadas faltantes
-                for feature in feature_names:
-                    if feature not in dados_features.columns:
-                        dados_features[feature] = 0.0
-            
-            # Usar apenas as features selecionadas, na ordem correta
-            try:
-                dados_features_finais = dados_features[feature_names]
-                st.success(f"✅ Features preparadas: {dados_features_finais.shape}")
-                return dados_features_finais.values
-            except KeyError as e:
-                st.error(f"❌ Erro ao selecionar features: {str(e)}")
-                # Fallback: usar todas as features disponíveis
-                return dados_features.values
+            # Selecionar e ordenar features
+            dados_features = dados[feature_names].copy()
         else:
-            st.warning("⚠️ Informações de seleção de features não encontradas. Usando todas as features.")
-            return dados_features.values
+            dados_features = dados[feature_cols].copy()
+        
+        # Limpeza
+        dados_features.replace([np.inf, -np.inf], np.nan, inplace=True)
+        dados_features.ffill(inplace=True)
+        dados_features.fillna(0, inplace=True)
+        
+        return dados_features.values
         
     except Exception as e:
-        st.error(f"❌ Erro ao preparar dados para previsão: {str(e)}")
+        st.error(f"❌ Erro ao preparar dados: {str(e)}")
         return None
+
+# === FUNÇÕES DE IA GENERATIVA ===
 
 def configurar_gemini(api_key):
     """Configura o modelo Gemini"""
+    if not GEMINI_AVAILABLE:
+        return None
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-pro')
         return model
     except Exception as e:
         st.error(f"Erro ao configurar Gemini: {str(e)}")
@@ -642,25 +783,16 @@ def configurar_gemini(api_key):
 
 def gerar_insight_async(model, prompt, insight_type):
     """Gera insight de forma assíncrona"""
+    if not GEMINI_AVAILABLE:
+        st.session_state.insights_queue.put((insight_type, "Google Generative AI não disponível"))
+        return
+    
     try:
-        # Configuração de segurança mais permissiva
         safety_settings = [
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_ONLY_HIGH"
-            },
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_ONLY_HIGH"
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_ONLY_HIGH"
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_ONLY_HIGH"
-            }
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"}
         ]
 
         response = model.generate_content(
@@ -676,65 +808,102 @@ def gerar_insight_async(model, prompt, insight_type):
         st.session_state.insights_queue.put((insight_type, f"Erro ao gerar insight: {str(e)}"))
 
 def iniciar_geracao_insights(model, ticker, dados, metricas):
-    """Inicia geração de insights em threads separadas"""
-
+    """Inicia geração de insights com dados extraídos corretamente"""
     try:
-        # Preparar dados para os prompts - CORREÇÃO: extrair valores escalares
-        preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1:])
-        variacao_mes = ((extrair_valor_escalar(dados['Close'].iloc[-1:]) / extrair_valor_escalar(dados['Close'].iloc[-30:-29])) - 1) * 100 if len(dados) > 30 else 0
-        rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1:]) if 'RSI' in dados.columns else 50
+        # Extrair dados de forma robusta
+        preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1])
+        preco_anterior = extrair_valor_escalar(dados['Close'].iloc[-2]) if len(dados) > 1 else preco_atual
+        variacao_mes = ((preco_atual / extrair_valor_escalar(dados['Close'].iloc[-min(30, len(dados)-1)])) - 1) * 100 if len(dados) > 30 else 0
+        rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1]) if 'RSI' in dados.columns else 50
+        volume_atual = extrair_valor_escalar(dados['Volume'].iloc[-1])
         volume_medio = extrair_valor_escalar(dados['Volume'].mean())
-
+        volatilidade = extrair_valor_escalar(dados['Close'].pct_change().std() * 100)
+        
+        # Análise técnica avançada
+        sma_7 = extrair_valor_escalar(dados['SMA_7'].iloc[-1]) if 'SMA_7' in dados.columns else preco_atual
+        sma_21 = extrair_valor_escalar(dados['SMA_21'].iloc[-1]) if 'SMA_21' in dados.columns else preco_atual
+        macd = extrair_valor_escalar(dados['MACD'].iloc[-1]) if 'MACD' in dados.columns else 0
+        bb_width = extrair_valor_escalar(dados['BB_width'].iloc[-1]) if 'BB_width' in dados.columns else 0
+        
         prompts = {
             'analise_tecnica': f"""
-            Como analista financeiro especializado, analise os seguintes indicadores técnicos da ação {ticker}:
-            - Preço atual: R$ {preco_atual:.2f}
-            - RSI: {rsi_atual:.2f}
-            - Variação mensal: {variacao_mes:.2f}%
-            - Volume médio: {volume_medio:.0f}
-
-            Forneça uma análise técnica concisa em 3-4 linhas, destacando se a ação está sobrecomprada, sobrevendida ou em equilíbrio.
-            Use emojis para tornar a leitura mais agradável.
+            Como analista financeiro experiente, analise os indicadores técnicos da ação {ticker}:
+            
+            📊 DADOS TÉCNICOS:
+            • Preço atual: R$ {preco_atual:.2f}
+            • RSI (14): {rsi_atual:.2f}
+            • Variação mensal: {variacao_mes:.2f}%
+            • Volume vs média: {(volume_atual/volume_medio):.2f}x
+            • Volatilidade: {volatilidade:.2f}%
+            • Médias móveis: SMA7={sma_7:.2f}, SMA21={sma_21:.2f}
+            • MACD: {macd:.4f}
+            • Largura Bollinger: {bb_width:.2f}
+            
+            Forneça uma análise técnica CONCISA em 4-5 linhas, identificando:
+            - Se está sobrecomprada/sobrevendida (RSI)
+            - Tendência das médias móveis
+            - Sinais de momentum (MACD)
+            - Nível de volatilidade
+            
+            Use emojis e seja objetivo. Foque nos pontos mais importantes.
             """,
 
             'tendencia': f"""
-            Analise a tendência da ação {ticker} com base nos seguintes dados:
-            - Preço atual: R$ {preco_atual:.2f}
-            - Média móvel 7 dias: R$ {extrair_valor_escalar(dados['SMA_7'].iloc[-1:]) if 'SMA_7' in dados.columns else preco_atual:.2f}
-            - Média móvel 21 dias: R$ {extrair_valor_escalar(dados['SMA_21'].iloc[-1:]) if 'SMA_21' in dados.columns else preco_atual:.2f}
-            - MACD: {extrair_valor_escalar(dados['MACD'].iloc[-1:]) if 'MACD' in dados.columns else 0:.4f}
-
-            Identifique se a tendência é de alta 📈, baixa 📉 ou lateral ➡️.
-            Justifique sua análise em 2-3 linhas de forma clara e objetiva.
+            Analise a TENDÊNCIA da ação {ticker} com base nos dados:
+            
+            📈 ANÁLISE DE TENDÊNCIA:
+            • Preço atual: R$ {preco_atual:.2f}
+            • SMA 7 dias: R$ {sma_7:.2f}
+            • SMA 21 dias: R$ {sma_21:.2f}
+            • MACD: {macd:.4f}
+            • Posição das médias: {"ALTA" if sma_7 > sma_21 else "BAIXA" if sma_7 < sma_21 else "LATERAL"}
+            • Volume relativo: {(volume_atual/volume_medio):.1f}x
+            
+            Identifique claramente:
+            📈 TENDÊNCIA DE ALTA - se indicadores apontam subida
+            📉 TENDÊNCIA DE BAIXA - se indicadores apontam queda  
+            ➡️ TENDÊNCIA LATERAL - se indefinida
+            
+            Justifique em 3-4 linhas com base nos indicadores técnicos.
             """,
 
-            'risco': f"""
-            Avalie o nível de risco da ação {ticker} considerando:
-            - Volatilidade (desvio padrão): {extrair_valor_escalar(dados['Close'].pct_change().std() * 100):.2f}%
-            - R² do modelo de previsão: {metricas.get('r2', 0):.4f}
-            - Largura das Bandas de Bollinger: {extrair_valor_escalar(dados['BB_width'].iloc[-1:]) if 'BB_width' in dados.columns else 0:.2f}
-
+            'risco_volatilidade': f"""
+            Avalie o RISCO e VOLATILIDADE da ação {ticker}:
+            
+            ⚠️ MÉTRICAS DE RISCO:
+            • Volatilidade diária: {volatilidade:.2f}%
+            • Accuracy do modelo: {metricas.get('accuracy', 0)*100:.1f}%
+            • Volume anômalo: {(volume_atual/volume_medio):.2f}x da média
+            • Largura Bollinger: {bb_width:.2f}
+            • RSI extremo: {"SIM" if rsi_atual > 70 or rsi_atual < 30 else "NÃO"}
+            
             Classifique o risco como:
-            🟢 Baixo (volatilidade < 2%)
-            🟡 Médio (volatilidade 2-4%)
-            🔴 Alto (volatilidade > 4%)
-
-            Explique sua classificação em 2-3 linhas.
+            🟢 BAIXO RISCO (vol < 2%, RSI 30-70)
+            🟡 RISCO MODERADO (vol 2-4%)
+            🔴 ALTO RISCO (vol > 4%, RSI extremo)
+            
+            Explique os principais fatores de risco em 3-4 linhas.
             """,
 
-            'recomendacao': f"""
-            Com base na análise da ação {ticker}:
-            - Preço atual: R$ {preco_atual:.2f}
-            - RSI: {rsi_atual:.2f}
-            - Volume em relação à média: {extrair_valor_escalar(dados['Volume_ratio'].iloc[-1:]) if 'Volume_ratio' in dados.columns else 1:.2f}x
-            - Tendência das médias móveis: {"Alta" if 'SMA_7' in dados.columns and 'SMA_21' in dados.columns and extrair_valor_escalar(dados['SMA_7'].iloc[-1:]) > extrair_valor_escalar(dados['SMA_21'].iloc[-1:]) else "Lateral"}
-
-            Forneça uma sugestão estratégica (não é recomendação de investimento):
-            💰 Momento de acumulação
-            ⏸️ Aguardar melhor momento
-            📊 Realizar lucros
-
-            Justifique em 3-4 linhas e sempre mencione que isso não é conselho financeiro.
+            'recomendacao_estrategica': f"""
+            Com base na análise COMPLETA da ação {ticker}, forneça sugestão estratégica:
+            
+            💼 CONTEXTO ESTRATÉGICO:
+            • Preço: R$ {preco_atual:.2f} (var. mensal: {variacao_mes:+.1f}%)
+            • RSI: {rsi_atual:.1f} {"(sobrecomprado)" if rsi_atual > 70 else "(sobrevendido)" if rsi_atual < 30 else "(neutro)"}
+            • Tendência: {"ALTA" if sma_7 > sma_21 else "BAIXA"}
+            • Volume: {(volume_atual/volume_medio):.1f}x da média
+            • Modelo accuracy: {metricas.get('accuracy', 0)*100:.1f}%
+            
+            Sugira UMA das estratégias:
+            💰 ACUMULAR - se sinais técnicos positivos
+            ⏸️ AGUARDAR - se sinais indefinidos
+            📊 REALIZAR LUCROS - se sobrecomprado
+            ⚠️ CAUTELA - se sinais negativos
+            
+            Justifique a estratégia em 4-5 linhas.
+            
+            ⚠️ DISCLAIMER: Esta análise é baseada apenas em indicadores técnicos e não constitui recomendação de investimento. Sempre consulte um profissional qualificado.
             """
         }
 
@@ -747,610 +916,1230 @@ def iniciar_geracao_insights(model, ticker, dados, metricas):
     
     except Exception as e:
         st.error(f"❌ Erro ao preparar insights: {str(e)}")
-        st.session_state.insights_queue.put(("erro", f"Erro na geração de insights: {str(e)}"))
 
-def testar_conectividade_yahoo():
-    """Testa a conectividade com o Yahoo Finance usando um ticker confiável"""
-    try:
-        # Usar um ticker americano muito estável para teste
-        ticker_teste = "AAPL"
-        st.info(f"🔄 Testando conectividade com Yahoo Finance usando {ticker_teste}...")
-        
-        dados_teste = yf.download(
-            ticker_teste, 
-            period="5d", 
-            progress=False,
-            timeout=10,
-            auto_adjust=False
-        )
-        
-        if dados_teste is not None and not dados_teste.empty and len(dados_teste) > 0:
-            st.success("✅ Conectividade com Yahoo Finance OK!")
-            return True
-        else:
-            st.error("❌ Yahoo Finance não retornou dados válidos")
-            return False
-            
-    except Exception as e:
-        st.error(f"❌ Erro de conectividade com Yahoo Finance: {str(e)}")
-        return False
+# === INTERFACE PRINCIPAL ===
 
-def carregar_modelo_seguro(ticker):
-    """Carrega modelo, scaler e métricas de forma segura"""
-    try:
-        # Verificar se arquivos existem
-        model_path = f'models/{ticker}_directional_model.keras'
-        scaler_path = f'scalers/{ticker}_directional_scaler.pkl'
-        metrics_path = f'metrics/{ticker}_directional_metrics.pkl'
-        
-        if not all(os.path.exists(path) for path in [model_path, scaler_path, metrics_path]):
-            return None, None, None, "Arquivos do modelo não encontrados"
-        
-        # Carregar métricas primeiro
-        metricas = joblib.load(metrics_path)
-        
-        # Carregar scaler
-        scaler = joblib.load(scaler_path)
-        
-        # Carregar modelo (sem compilar para evitar erros de compatibilidade)
-        modelo = load_model(model_path, compile=False)
-        
-        return modelo, scaler, metricas, None
-        
-    except Exception as e:
-        error_msg = f"Erro ao carregar modelo: {str(e)}"
-        return None, None, None, error_msg
+st.markdown('<h1 class="dashboard-header">📈 StockAI Predictor v2.0 - Previsão Inteligente</h1>', unsafe_allow_html=True)
 
-# Interface principal
-st.markdown('<h1 class="dashboard-header">📈 StockAI Predictor - Previsão Inteligente de Ações</h1>', unsafe_allow_html=True)
-
-# Sidebar
+# Sidebar melhorada
 with st.sidebar:
-    st.markdown("### ⚙️ Configurações")
+    st.markdown("### ⚙️ Configurações do Sistema")
 
-    # Seleção de ticker
+    # Seleção de ticker expandida
     tickers_disponiveis = {
-        'PETR4.SA': 'Petrobras',
-        'VALE3.SA': 'Vale',
-        'ITUB4.SA': 'Itaú Unibanco',
-        'BBDC4.SA': 'Bradesco',
-        'ABEV3.SA': 'Ambev',
-        'WEGE3.SA': 'WEG',
-        'MGLU3.SA': 'Magazine Luiza',
-        'RENT3.SA': 'Localiza',
-        'BPAC11.SA': 'BTG Pactual',
-        'PRIO3.SA': 'PetroRio'
+        'PETR4.SA': 'Petrobras PN',
+        'VALE3.SA': 'Vale ON',
+        'ITUB4.SA': 'Itaú Unibanco PN',
+        'BBDC4.SA': 'Bradesco PN',
+        'ABEV3.SA': 'Ambev ON',
+        'WEGE3.SA': 'WEG ON',
+        'MGLU3.SA': 'Magazine Luiza ON',
+        'RENT3.SA': 'Localiza ON',
+        'BPAC11.SA': 'BTG Pactual UNT',
+        'PRIO3.SA': 'PetroRio ON',
+        'SUZB3.SA': 'Suzano ON',
+        'JBSS3.SA': 'JBS ON',
+        'B3SA3.SA': 'B3 ON',
+        'IRBR3.SA': 'IRB Brasil ON',
+        'HAPV3.SA': 'Hapvida ON'
     }
 
     ticker_selecionado = st.selectbox(
         "🎯 Selecione a Ação",
         options=list(tickers_disponiveis.keys()),
-        format_func=lambda x: f"{tickers_disponiveis[x]} ({x})"
+        format_func=lambda x: f"{tickers_disponiveis[x]} ({x})",
+        help="Escolha a ação para análise e previsão"
     )
 
     periodo = st.select_slider(
         "📅 Período de Análise",
         options=['1mo', '3mo', '6mo', '1y', '2y', '5y'],
-        value='1y'
+        value='1y',
+        help="Período histórico para análise"
     )
 
     st.markdown("---")
 
-    # Informações do modelo
-    if os.path.exists(f'models/{ticker_selecionado}_directional_model.keras'):
+    # Status do modelo melhorado
+    st.markdown("### 🤖 Status do Modelo")
+    
+    model_path = f'models/{ticker_selecionado}_directional_model.keras'
+    scaler_path = f'scalers/{ticker_selecionado}_directional_scaler.pkl'
+    metrics_path = f'metrics/{ticker_selecionado}_directional_metrics.pkl'
+    
+    if all(os.path.exists(path) for path in [model_path, scaler_path, metrics_path]):
         try:
-            metricas = joblib.load(f'metrics/{ticker_selecionado}_directional_metrics.pkl')
-            st.markdown("### 🤖 Modelo Treinado")
-            st.success(f"✅ Modelo disponível")
-            st.info(f"📅 Treinado em: {metricas['data_treino']}")
-            st.metric("R² Score", f"{metricas.get('accuracy', 0):.4f}")
-            st.metric("RMSE", f"R$ {metricas.get('precision', 0):.2f}")
-        except:
-            st.error("❌ Erro ao carregar métricas do modelo")
+            metricas = joblib.load(metrics_path)
+            st.markdown(f'<div class="custom-alert alert-success">✅ Modelo Disponível</div>', unsafe_allow_html=True)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("🎯 Acurácia", f"{metricas.get('accuracy', 0)*100:.1f}%")
+                st.metric("📊 F1 Score", f"{metricas.get('f1_score', 0):.3f}")
+            with col2:
+                st.metric("🔍 Precisão", f"{metricas.get('precision', 0):.3f}")
+                st.metric("📈 Recall", f"{metricas.get('recall', 0):.3f}")
+            
+            st.caption(f"🕒 Treinado em: {metricas.get('data_treino', 'N/A')}")
+            st.caption(f"🧠 Modelo: {metricas.get('modelo_nome', 'N/A')}")
+            
+        except Exception as e:
+            st.markdown(f'<div class="custom-alert alert-error">❌ Erro ao carregar métricas</div>', unsafe_allow_html=True)
     else:
-        st.error("❌ Modelo não encontrado")
-        st.warning("Execute a célula de treinamento primeiro!")
+        st.markdown(f'<div class="custom-alert alert-warning">⚠️ Modelo não encontrado</div>', unsafe_allow_html=True)
+        st.info("Execute o treinamento primeiro!")
     
     st.markdown("---")
     
-    # Seção de diagnóstico
-    st.markdown("### 🔧 Diagnóstico")
+    # Google API Key para IA
+    if GEMINI_AVAILABLE:
+        st.markdown("### 🔑 IA Generativa")
+        google_api_key = st.text_input(
+            "Google API Key",
+            type="password",
+            help="Insira sua chave da API do Google Gemini"
+        )
+        if google_api_key and not st.session_state.model_configured:
+            model = configurar_gemini(google_api_key)
+            if model:
+                st.session_state.model_configured = True
+                st.session_state.gemini_model = model
+                st.success("✅ IA configurada!")
+    else:
+        st.markdown(f'<div class="custom-alert alert-warning">⚠️ Google Generative AI não instalado</div>', unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Configurações de Debug
+    st.markdown("### ⚙️ Configurações")
+    
+    st.session_state.verbose_mode = st.toggle(
+        "🔍 Modo Verboso", 
+        value=st.session_state.verbose_mode,
+        help="Mostra logs detalhados durante o carregamento"
+    )
+    
+    if st.session_state.loading_logs and not st.session_state.verbose_mode:
+        with st.expander("📋 Ver Logs de Carregamento", expanded=False):
+            for log_type, log_msg in st.session_state.loading_logs[-10:]:  # Últimos 10 logs
+                if log_type == "success":
+                    st.success(log_msg)
+                elif log_type == "warning":
+                    st.warning(log_msg)
+                elif log_type == "error":
+                    st.error(log_msg)
+                else:
+                    st.info(log_msg)
+    
+    st.markdown("---")
+    
+    # Ferramentas de diagnóstico melhoradas
+    st.markdown("### 🔧 Ferramentas")
+    
     if st.button("🌐 Testar Conectividade", use_container_width=True):
-        testar_conectividade_yahoo()
+        with st.spinner("Testando..."):
+            try:
+                test_data = yf.download("AAPL", period="5d", progress=False)
+                if test_data is not None and not test_data.empty:
+                    st.success("✅ Conectividade OK!")
+                else:
+                    st.error("❌ Problema de conectividade")
+            except Exception as e:
+                st.error(f"❌ Erro: {str(e)}")
     
-    # Verificação de modelos disponíveis
-    if st.button("🔍 Verificar Modelos", use_container_width=True):
-        st.markdown("#### 📂 Status dos Modelos:")
-        for ticker, nome in tickers_disponiveis.items():
-            model_path = f'models/{ticker}_directional_model.keras'
-            scaler_path = f'scalers/{ticker}_directional_scaler.pkl'
-            metrics_path = f'metrics/{ticker}_directional_metrics.pkl'
-            
-            status_model = "✅" if os.path.exists(model_path) else "❌"
-            status_scaler = "✅" if os.path.exists(scaler_path) else "❌"
-            status_metrics = "✅" if os.path.exists(metrics_path) else "❌"
-            
-            all_exist = all(os.path.exists(p) for p in [model_path, scaler_path, metrics_path])
-            
-            if all_exist:
-                try:
-                    metrics = joblib.load(metrics_path)
-                    accuracy = metrics.get('accuracy', 0)
-                    st.success(f"**{nome}**: Completo (Acc: {accuracy:.1%})")
-                except:
-                    st.warning(f"**{nome}**: Arquivos existem mas há erro ao carregar")
-            else:
-                st.error(f"**{nome}**: Modelo={status_model} Scaler={status_scaler} Métricas={status_metrics}")
-    
-    # Botão para limpar cache
-    if st.button("🗑️ Limpar Cache", use_container_width=True):
-        st.cache_data.clear()
-        st.success("✅ Cache limpo! Atualize a página.")
-    
-    st.markdown("---")
-    
-    # Informações de ajuda
-    with st.expander("❓ Problemas Comuns"):
-        st.markdown("""
-        **❌ "Modelo não encontrado"?**
-        - Execute primeiro o `treinamento.py` para criar os modelos
-        - Verifique se existem as pastas: `models/`, `scalers/`, `metrics/`
-        - Use o botão "🔍 Verificar Modelos" acima para diagnóstico
-        - Certifique-se que os arquivos foram salvos corretamente
-        
-        **📁 Estrutura de arquivos necessária:**
-        ```
-        models/{ticker}_directional_model.keras
-        scalers/{ticker}_directional_scaler.pkl
-        metrics/{ticker}_directional_metrics.pkl
-        ```
-        
-        **Não consegue carregar dados?**
-        - Verifique sua conexão com a internet
-        - Teste a conectividade usando o botão acima
-        - Tente outro ticker ou período menor
-        
-        **Dados muito antigos?**
-        - Limpe o cache usando o botão acima
-        - Atualize a página (F5)
-        
-        **Erro de modelo?**
-        - Execute primeiro o treinamento.py
-        - Verifique se os arquivos foram salvos corretamente
-        - Certifique-se que não há erros no console durante o treinamento
-        """)
-    
-    # Adicionar informações sobre os arquivos necessários
-    st.markdown("---")
-    st.markdown("### 📋 Arquivos Necessários")
-    if st.button("📂 Verificar Estrutura de Diretórios", use_container_width=True):
+    if st.button("📂 Verificar Estrutura", use_container_width=True):
+        st.markdown("#### 📋 Status dos Diretórios:")
         directories = ['models', 'scalers', 'metrics']
         for directory in directories:
             if os.path.exists(directory):
-                files_count = len([f for f in os.listdir(directory) if f.endswith(('.keras', '.pkl'))])
-                st.success(f"✅ `{directory}/` existe ({files_count} arquivos)")
+                files = [f for f in os.listdir(directory) if f.endswith(('.keras', '.pkl'))]
+                st.success(f"✅ `{directory}/` - {len(files)} arquivos")
             else:
                 st.error(f"❌ `{directory}/` não existe")
-                st.info(f"💡 Execute: `os.makedirs('{directory}', exist_ok=True)`")
+    
+    if st.button("🗑️ Limpar Cache", use_container_width=True):
+        st.cache_data.clear()
+        st.session_state.model_cache = {}
+        st.success("✅ Cache limpo!")
+        st.rerun()
 
-# Configurar modelo Gemini se a API key foi fornecida
-if GOOGLE_API_KEY and not st.session_state.model_configured:
-    model = configurar_gemini(GOOGLE_API_KEY)
-    if model:
-        st.session_state.model_configured = True
-        st.session_state.gemini_model = model
-
-# Layout principal
-if ticker_selecionado and os.path.exists(f'models/{ticker_selecionado}_directional_model.keras'):
-
+# Interface principal
+if ticker_selecionado:
+    # Verificar se modelo existe
+    if not os.path.exists(f'models/{ticker_selecionado}_directional_model.keras'):
+        st.markdown(f'''
+        <div class="custom-alert alert-error">
+            ❌ <strong>Modelo não encontrado para {tickers_disponiveis[ticker_selecionado]}</strong><br>
+            Execute o script de treinamento primeiro para criar o modelo.
+        </div>
+        ''', unsafe_allow_html=True)
+        st.stop()
+    
     # Carregar dados e modelo
-    with st.spinner('Carregando dados...'):
-        dados = carregar_dados_ticker(ticker_selecionado, periodo)
-        modelo, scaler, metricas, error_msg = carregar_modelo_seguro(ticker_selecionado)
+    if st.session_state.verbose_mode:
+        with st.spinner('🔄 Carregando dados e modelo...'):
+            dados = carregar_dados_ticker(ticker_selecionado, periodo)
+            modelo, scaler, metricas, error_msg = carregar_modelo_completo(ticker_selecionado)
+    else:
+        # Modo silencioso - apenas spinner limpo
+        with st.spinner('🔄 Preparando análise...'):
+            dados = carregar_dados_ticker(ticker_selecionado, periodo)
+            modelo, scaler, metricas, error_msg = carregar_modelo_completo(ticker_selecionado)
         
-        if error_msg:
-            st.error(error_msg)
-            st.stop()
+        # Mostrar apenas resultado final
+        if dados is not None and modelo is not None:
+            st.success(f"✅ {tickers_disponiveis[ticker_selecionado]} carregado com {len(dados)} registros")
+        elif error_msg:
+            st.error(f"❌ {error_msg}")
+        else:
+            st.error("❌ Erro no carregamento dos dados")
+    
+    if error_msg:
+        st.stop()
+    
+    if dados is None:
+        st.stop()
+
+    # Verificar qualidade dos dados
+    saude_ok, msg_saude = verificar_saude_dados(dados)
+    if not saude_ok:
+        st.warning(f"⚠️ Problemas detectados nos dados: {msg_saude}")
+
+    # Interface em abas
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Dashboard Principal", 
+        "🔮 Previsão IA", 
+        "🤖 Insights Gemini", 
+        "📈 Análise Técnica",
+        "🔍 Diagnóstico"
+    ])
+
+    with tab1:
+        # Métricas principais com cards melhorados
+        st.markdown("### 💰 Resumo Financeiro")
         
-        if modelo is None or scaler is None or metricas is None:
-            st.error("❌ Erro ao carregar componentes do modelo")
-            st.stop()
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        # Calcular métricas
+        preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1])
+        preco_anterior = extrair_valor_escalar(dados['Close'].iloc[-2]) if len(dados) > 1 else preco_atual
+        variacao_diaria = ((preco_atual - preco_anterior) / preco_anterior) * 100 if preco_anterior != 0 else 0
+        
+        volume_atual = extrair_valor_escalar(dados['Volume'].iloc[-1])
+        volume_medio = extrair_valor_escalar(dados['Volume'].mean())
+        volume_ratio = volume_atual / volume_medio if volume_medio != 0 else 1
+        
+        rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1]) if 'RSI' in dados.columns else 50
+        volatilidade = extrair_valor_escalar(dados['Close'].pct_change().std() * 100)
+        
+        # Calcular variação mensal
+        if len(dados) >= 22:  # ~1 mês de dados
+            preco_mes_passado = extrair_valor_escalar(dados['Close'].iloc[-22])
+            variacao_mensal = ((preco_atual - preco_mes_passado) / preco_mes_passado) * 100 if preco_mes_passado != 0 else 0
+        else:
+            variacao_mensal = 0
 
-    if dados is not None and len(dados) > 0:
-        # Tabs principais
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🔮 Previsão", "🤖 Insights IA", "📈 Análise Técnica"])
-
-        with tab1:
-            # Métricas principais
-            col1, col2, col3, col4 = st.columns(4)
-
-            # CORREÇÃO: Extrair valores escalares de forma segura
-            preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1:])
-            preco_anterior = extrair_valor_escalar(dados['Close'].iloc[-2:-1])
-            variacao_diaria = ((preco_atual - preco_anterior) / preco_anterior) * 100
-
-            with col1:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("💰 Preço Atual", f"R$ {preco_atual:.2f}",
-                         f"{variacao_diaria:+.2f}%",
-                         delta_color="normal" if variacao_diaria >= 0 else "inverse")
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            with col2:
-                volume_atual = extrair_valor_escalar(dados['Volume'].iloc[-1:])
-                volume_medio = extrair_valor_escalar(dados['Volume'].mean())
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("📊 Volume", f"{volume_atual:,.0f}",
-                         f"{((volume_atual/volume_medio - 1) * 100):+.1f}% vs média")
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            with col3:
-                rsi = extrair_valor_escalar(dados['RSI'].iloc[-1:])
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("📈 RSI", f"{rsi:.2f}",
-                         "Sobrecomprado" if rsi > 70 else "Sobrevendido" if rsi < 30 else "Neutro")
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            with col4:
-                volatilidade = extrair_valor_escalar(dados['Close'].pct_change().std() * 100)
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("📊 Volatilidade", f"{volatilidade:.2f}%",
-                         "Alta" if volatilidade > 3 else "Baixa")
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            # Gráfico principal
-            st.markdown("### 📈 Gráfico de Preços e Volume")
-
-            fig = make_subplots(
-                rows=2, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.03,
-                row_heights=[0.7, 0.3],
-                subplot_titles=("Preço e Médias Móveis", "Volume")
+        with col1:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            st.metric(
+                "💰 Preço Atual", 
+                f"R$ {preco_atual:.2f}",
+                f"{variacao_diaria:+.2f}%" if variacao_diaria != 0 else "0.00%",
+                delta_color="normal" if variacao_diaria >= 0 else "inverse"
             )
+            st.markdown('</div>', unsafe_allow_html=True)
 
-            # Candlestick
-            fig.add_trace(
-                go.Candlestick(
-                    x=dados.index,
-                    open=dados['Open'],
-                    high=dados['High'],
-                    low=dados['Low'],
-                    close=dados['Close'],
-                    name="Preço",
-                    increasing_line_color='#26a69a',
-                    decreasing_line_color='#ef5350'
-                ),
-                row=1, col=1
+        with col2:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            st.metric(
+                "📊 Volume", 
+                f"{volume_atual:,.0f}",
+                f"{volume_ratio:.1f}x média"
             )
+            st.markdown('</div>', unsafe_allow_html=True)
 
-            # Médias móveis
+        with col3:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            rsi_status = "⚠️ Sobrecomprado" if rsi_atual > 70 else "⚠️ Sobrevendido" if rsi_atual < 30 else "✅ Neutro"
+            st.metric("📈 RSI", f"{rsi_atual:.1f}", rsi_status)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col4:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            vol_status = "🔴 Alta" if volatilidade > 3 else "🟡 Média" if volatilidade > 1.5 else "🟢 Baixa"
+            st.metric("📉 Volatilidade", f"{volatilidade:.2f}%", vol_status)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col5:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            st.metric(
+                "📅 Var. Mensal", 
+                f"{variacao_mensal:+.2f}%",
+                "📈 Positiva" if variacao_mensal > 0 else "📉 Negativa" if variacao_mensal < 0 else "➡️ Estável"
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Gráfico principal melhorado
+        st.markdown("### 📈 Análise Gráfica Avançada")
+
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.02,
+            row_heights=[0.6, 0.2, 0.2],
+            subplot_titles=(
+                f"Preços e Indicadores - {tickers_disponiveis[ticker_selecionado]}", 
+                "Volume de Negociação", 
+                "RSI (14 períodos)"
+            )
+        )
+
+        # Candlestick melhorado
+        fig.add_trace(
+            go.Candlestick(
+                x=dados.index,
+                open=dados['Open'],
+                high=dados['High'],
+                low=dados['Low'],
+                close=dados['Close'],
+                name="Preço",
+                increasing_line_color='#00D4AA',
+                decreasing_line_color='#FF6B6B',
+                increasing_fillcolor='#00D4AA',
+                decreasing_fillcolor='#FF6B6B'
+            ),
+            row=1, col=1
+        )
+
+        # Médias móveis com cores modernas
+        if 'SMA_7' in dados.columns:
             fig.add_trace(
                 go.Scatter(
                     x=dados.index,
                     y=dados['SMA_7'],
                     name="SMA 7",
-                    line=dict(color='#2196F3', width=2)
+                    line=dict(color='#667eea', width=2)
                 ),
                 row=1, col=1
             )
 
+        if 'SMA_21' in dados.columns:
             fig.add_trace(
                 go.Scatter(
                     x=dados.index,
                     y=dados['SMA_21'],
                     name="SMA 21",
-                    line=dict(color='#FFC107', width=2)
+                    line=dict(color='#f093fb', width=2)
                 ),
                 row=1, col=1
             )
 
-            # Volume
-            colors = []
-            for i in range(len(dados)):
-                close_val = extrair_valor_escalar(dados['Close'].iloc[i:i+1])
-                open_val = extrair_valor_escalar(dados['Open'].iloc[i:i+1])
-                colors.append('#26a69a' if close_val >= open_val else '#ef5350')
-
+        # Bollinger Bands
+        if all(col in dados.columns for col in ['BB_upper', 'BB_lower']):
             fig.add_trace(
-                go.Bar(
+                go.Scatter(
                     x=dados.index,
-                    y=dados['Volume'],
-                    name="Volume",
-                    marker_color=colors
+                    y=dados['BB_upper'],
+                    name="BB Superior",
+                    line=dict(color='rgba(100, 100, 100, 0.3)', width=1),
+                    showlegend=False
                 ),
-                row=2, col=1
+                row=1, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=dados.index,
+                    y=dados['BB_lower'],
+                    name="BB Inferior",
+                    line=dict(color='rgba(100, 100, 100, 0.3)', width=1),
+                    fill='tonexty',
+                    fillcolor='rgba(100, 100, 100, 0.1)',
+                    showlegend=False
+                ),
+                row=1, col=1
             )
 
-            fig.update_layout(
-                template="plotly_white",
-                height=600,
-                showlegend=True,
-                xaxis_rangeslider_visible=False,
-                margin=dict(l=0, r=0, t=30, b=0)
+        # Volume com cores baseadas no preço
+        colors = []
+        for i in range(len(dados)):
+            close_val = extrair_valor_escalar(dados['Close'].iloc[i])
+            open_val = extrair_valor_escalar(dados['Open'].iloc[i])
+            colors.append('#00D4AA' if close_val >= open_val else '#FF6B6B')
+
+        fig.add_trace(
+            go.Bar(
+                x=dados.index,
+                y=dados['Volume'],
+                name="Volume",
+                marker_color=colors,
+                opacity=0.7
+            ),
+            row=2, col=1
+        )
+
+        # RSI
+        if 'RSI' in dados.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=dados.index,
+                    y=dados['RSI'],
+                    name='RSI',
+                    line=dict(color='#667eea', width=2)
+                ),
+                row=3, col=1
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            # Linhas de referência RSI
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+            fig.add_hline(y=50, line_dash="dot", line_color="gray", row=3, col=1)
 
-        with tab2:
-            st.markdown("### 🔮 Previsão para o Próximo Dia")
+        fig.update_layout(
+            template="plotly_white",
+            height=800,
+            showlegend=True,
+            xaxis_rangeslider_visible=False,
+            margin=dict(l=0, r=0, t=50, b=0)
+        )
 
-            # Preparar dados para previsão
-            features = metricas.get('feature_names', [])
-            janela = metricas.get('janela', 15)
+        st.plotly_chart(fig, use_container_width=True)
 
-            # Pegar últimos dados
-            if len(dados) >= janela:
-                # Usar a nova função para preparar dados
-                ultimos_dados_preparados = preparar_dados_para_previsao(dados, metricas)
-                
-                if ultimos_dados_preparados is not None:
-                    ultimos_dados = ultimos_dados_preparados[-janela:]
+        # Resumo do dia
+        st.markdown("### 📋 Resumo do Dia")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown(f"""
+            **📊 Dados de Preço:**
+            - **Abertura:** R$ {extrair_valor_escalar(dados['Open'].iloc[-1]):.2f}
+            - **Máxima:** R$ {extrair_valor_escalar(dados['High'].iloc[-1]):.2f}
+            - **Mínima:** R$ {extrair_valor_escalar(dados['Low'].iloc[-1]):.2f}
+            - **Fechamento:** R$ {preco_atual:.2f}
+            - **Variação:** {variacao_diaria:+.2f}%
+            """)
+        
+        with col2:
+            amplitude = extrair_valor_escalar(dados['High'].iloc[-1]) - extrair_valor_escalar(dados['Low'].iloc[-1])
+            st.markdown(f"""
+            **📈 Estatísticas:**
+            - **Volume:** {volume_atual:,.0f}
+            - **Amplitude:** R$ {amplitude:.2f}
+            - **RSI:** {rsi_atual:.1f}
+            - **Volatilidade:** {volatilidade:.2f}%
+            """)
+
+    with tab2:
+        st.markdown("### 🔮 Previsão Direcional com IA")
+
+        if modelo is not None and scaler is not None:
+            try:
+                # Preparar dados para previsão
+                features = metricas.get('feature_names', [])
+                janela = metricas.get('janela', 30)
+
+                if len(dados) >= janela:
+                    # Preparar features
+                    dados_prep = preparar_dados_previsao(dados, metricas)
                     
-                    # Obter informações sobre features
-                    num_selected_features = len(metricas.get('feature_names', []))
-                    
-                    st.info(f"📊 Dados preparados: {ultimos_dados.shape}")
-                    st.info(f"🎯 Features selecionadas: {num_selected_features}")
-                    
-                    # Escalar os dados
-                    ultimos_dados_norm = scaler.transform(ultimos_dados)
-                    
-                    # Fazer previsão (modelo de classificação)
-                    X_pred = ultimos_dados_norm.reshape(1, janela, ultimos_dados_norm.shape[1])
-                    previsao_proba = modelo.predict(X_pred, verbose=0)[0, 0]
-                    previsao_classe = 1 if previsao_proba > 0.5 else 0
-
-                    # Display da previsão
-                    col1, col2, col3 = st.columns([1, 2, 1])
-
-                    with col2:
-                        st.markdown('<div class="metric-card" style="text-align: center;">', unsafe_allow_html=True)
+                    if dados_prep is not None:
+                        ultimos_dados = dados_prep[-janela:]
                         
-                        if previsao_classe == 1:
-                            st.markdown(f'<h2 class="big-metric" style="color: #4CAF50;">📈 ALTA</h2>', unsafe_allow_html=True)
-                            st.success(f"📈 Tendência de ALTA")
+                        # Escalar dados
+                        ultimos_dados_norm = scaler.transform(ultimos_dados)
+                        
+                        # Fazer previsão
+                        X_pred = ultimos_dados_norm.reshape(1, janela, ultimos_dados_norm.shape[1])
+                        
+                        with st.spinner("🤖 Processando previsão..."):
+                            previsao_proba = modelo.predict(X_pred, verbose=0)[0, 0]
+                            previsao_classe = 1 if previsao_proba > 0.5 else 0
+                            confianca = abs(previsao_proba - 0.5) * 2
+
+                        # Display da previsão com design moderno
+                        col1, col2, col3 = st.columns([1, 2, 1])
+
+                        with col2:
+                            if previsao_classe == 1:
+                                st.markdown(f'''
+                                <div class="metric-card" style="text-align: center; background: linear-gradient(135deg, #00D4AA, #00B894);">
+                                    <h1 style="color: white; margin: 0;">📈 TENDÊNCIA DE ALTA</h1>
+                                    <h2 style="color: white; margin: 10px 0;">Probabilidade: {previsao_proba:.1%}</h2>
+                                    <h3 style="color: white; margin: 0;">Confiança: {confianca:.1%}</h3>
+                                </div>
+                                ''', unsafe_allow_html=True)
+                            else:
+                                st.markdown(f'''
+                                <div class="metric-card" style="text-align: center; background: linear-gradient(135deg, #FF6B6B, #E55656);">
+                                    <h1 style="color: white; margin: 0;">📉 TENDÊNCIA DE BAIXA</h1>
+                                    <h2 style="color: white; margin: 10px 0;">Probabilidade: {1-previsao_proba:.1%}</h2>
+                                    <h3 style="color: white; margin: 0;">Confiança: {confianca:.1%}</h3>
+                                </div>
+                                ''', unsafe_allow_html=True)
+
+                        # Métricas do modelo
+                        st.markdown("### 📊 Performance do Modelo")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            accuracy = metricas.get('accuracy', 0)
+                            color = "🟢" if accuracy > 0.7 else "🟡" if accuracy > 0.6 else "🔴"
+                            st.metric(f"{color} Acurácia", f"{accuracy:.1%}")
+                        
+                        with col2:
+                            precision = metricas.get('precision', 0)
+                            st.metric("🎯 Precisão", f"{precision:.3f}")
+                        
+                        with col3:
+                            recall = metricas.get('recall', 0)
+                            st.metric("📈 Recall", f"{recall:.3f}")
+                        
+                        with col4:
+                            f1_score = metricas.get('f1_score', 0)
+                            st.metric("⚖️ F1 Score", f"{f1_score:.3f}")
+
+                        # Gráfico de previsão
+                        st.markdown("### 📈 Visualização da Previsão")
+
+                        # Últimos 30 dias
+                        periodo_viz = min(30, len(dados))
+                        dados_viz = dados['Close'].iloc[-periodo_viz:].copy()
+                        
+                        fig_prev = go.Figure()
+
+                        # Dados históricos
+                        fig_prev.add_trace(go.Scatter(
+                            x=dados_viz.index,
+                            y=dados_viz.values,
+                            mode='lines+markers',
+                            name='Histórico',
+                            line=dict(color='#667eea', width=3),
+                            marker=dict(size=4)
+                        ))
+
+                        # Ponto atual
+                        ultimo_preco = extrair_valor_escalar(dados_viz.iloc[-1])
+                        fig_prev.add_trace(go.Scatter(
+                            x=[dados_viz.index[-1]],
+                            y=[ultimo_preco],
+                            mode='markers',
+                            name='Preço Atual',
+                            marker=dict(
+                                size=15,
+                                color='gold',
+                                symbol='star',
+                                line=dict(width=2, color='black')
+                            )
+                        ))
+
+                        # Sinal de previsão
+                        cor_sinal = '#00D4AA' if previsao_classe == 1 else '#FF6B6B'
+                        simbolo_sinal = 'triangle-up' if previsao_classe == 1 else 'triangle-down'
+                        texto_sinal = f"📈 {previsao_proba:.1%}" if previsao_classe == 1 else f"📉 {1-previsao_proba:.1%}"
+                        
+                        fig_prev.add_annotation(
+                            x=dados_viz.index[-1],
+                            y=ultimo_preco,
+                            text=texto_sinal,
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowcolor=cor_sinal,
+                            arrowwidth=3,
+                            arrowsize=2,
+                            ax=50 if previsao_classe == 1 else -50,
+                            ay=-50,
+                            font=dict(size=14, color=cor_sinal, family="Arial Black"),
+                            bgcolor="white",
+                            bordercolor=cor_sinal,
+                            borderwidth=2
+                        )
+
+                        fig_prev.update_layout(
+                            template="plotly_white",
+                            height=500,
+                            title=f"Previsão para {tickers_disponiveis[ticker_selecionado]} - Próximo Pregão",
+                            xaxis_title="Data",
+                            yaxis_title="Preço (R$)",
+                            showlegend=True,
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)'
+                        )
+
+                        st.plotly_chart(fig_prev, use_container_width=True)
+
+                        # Interpretação da previsão
+                        st.markdown("### 🧠 Interpretação da IA")
+                        
+                        if confianca > 0.7:
+                            conf_emoji = "🟢"
+                            conf_text = "ALTA CONFIANÇA"
+                        elif confianca > 0.4:
+                            conf_emoji = "🟡"
+                            conf_text = "CONFIANÇA MODERADA"
                         else:
-                            st.markdown(f'<h2 class="big-metric" style="color: #f44336;">📉 BAIXA</h2>', unsafe_allow_html=True)
-                            st.error(f"📉 Tendência de BAIXA")
-                        
-                        st.markdown(f"<h4>Probabilidade: {previsao_proba:.1%}</h4>", unsafe_allow_html=True)
-                        st.markdown(f"<h4>Confiança: {abs(previsao_proba - 0.5) * 2:.1%}</h4>", unsafe_allow_html=True)
+                            conf_emoji = "🔴"
+                            conf_text = "BAIXA CONFIANÇA"
 
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        st.markdown(f"""
+                        <div class="insight-card">
+                            <h4>{conf_emoji} Nível de Confiança: {conf_text}</h4>
+                            <p><strong>Análise:</strong> O modelo prevê uma <strong>{'ALTA' if previsao_classe == 1 else 'BAIXA'}</strong> 
+                            com probabilidade de <strong>{max(previsao_proba, 1-previsao_proba):.1%}</strong>.</p>
+                            
+                            <p><strong>Fatores considerados:</strong></p>
+                            <ul>
+                                <li>📊 {len(metricas.get('feature_names', []))} indicadores técnicos</li>
+                                <li>📈 Dados de {janela} períodos anteriores</li>
+                                <li>🌍 Correlações com índices de mercado</li>
+                                <li>🤖 Modelo treinado: {metricas.get('modelo_nome', 'N/A')}</li>
+                            </ul>
+                            
+                            <p><strong>⚠️ Importante:</strong> Esta previsão é baseada em padrões históricos e não garante resultados futuros. 
+                            Use sempre em conjunto com outras análises e consulte profissionais qualificados.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-                    # Confiança do modelo
-                    st.markdown("### 📊 Confiança da Previsão")
-
-                    col1, col2, col3 = st.columns(3)
-
-                    with col1:
-                        accuracy = metricas.get('accuracy', 0) * 100
-                        st.metric("🎯 Acurácia Histórica", f"{accuracy:.1f}%")
-
-                    with col2:
-                        precision = metricas.get('precision', 0)
-                        st.metric("📊 Precisão", f"{precision:.3f}")
-
-                    with col3:
-                        f1_score = metricas.get('f1_score', 0)
-                        st.metric("📈 F1 Score", f"{f1_score:.3f}")
-
-                    # Gráfico de previsão
-                    st.markdown("### 📈 Visualização da Previsão")
-
-                    # Últimos 30 dias + previsão
-                    ultimos_30_dias = dados['Close'].iloc[-30:].copy()
-                    
-                    fig_prev = go.Figure()
-
-                    # Histórico
-                    fig_prev.add_trace(go.Scatter(
-                        x=ultimos_30_dias.index,
-                        y=ultimos_30_dias.values,
-                        mode='lines',
-                        name='Histórico',
-                        line=dict(color='#2196F3', width=3)
-                    ))
-
-                    # Indicador de previsão
-                    ultimo_preco = extrair_valor_escalar(preco_atual)
-                    cor_previsao = '#4CAF50' if previsao_classe == 1 else '#f44336'
-                    simbolo_previsao = '📈' if previsao_classe == 1 else '📉'
-                    
-                    fig_prev.add_annotation(
-                        x=ultimos_30_dias.index[-1],
-                        y=ultimo_preco,
-                        text=f"{simbolo_previsao} {previsao_proba:.1%}",
-                        showarrow=True,
-                        arrowhead=2,
-                        arrowcolor=cor_previsao,
-                        font=dict(size=14, color=cor_previsao)
-                    )
-
-                    fig_prev.update_layout(
-                        template="plotly_white",
-                        height=400,
-                        title="Últimos 30 dias + Previsão Direcional",
-                        xaxis_title="Data",
-                        yaxis_title="Preço (R$)",
-                        showlegend=True
-                    )
-
-                    st.plotly_chart(fig_prev, use_container_width=True)
+                    else:
+                        st.error("❌ Erro ao preparar dados para previsão")
                 else:
-                    st.error("❌ Erro ao preparar dados para previsão")
-            else:
-                st.error(f"Dados insuficientes. Necessário pelo menos {janela} dias de histórico.")
+                    st.error(f"❌ Dados insuficientes. Necessário: {janela} períodos, disponível: {len(dados)}")
 
-            # Disclaimer
-            st.warning("⚠️ **Aviso Legal**: Esta previsão é baseada em análise técnica e machine learning. Não constitui recomendação de investimento. Sempre consulte um profissional qualificado antes de tomar decisões de investimento.")
+            except Exception as e:
+                st.error(f"❌ Erro na previsão: {str(e)}")
+                st.code(f"Detalhes do erro: {type(e).__name__}: {str(e)}")
 
-        with tab3:
-            st.markdown("### 🤖 Insights de IA Generativa")
+        else:
+            st.error("❌ Modelo não carregado corretamente")
 
-            if GOOGLE_API_KEY and st.session_state.model_configured:
-                # Botão para gerar insights
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    if st.button("🚀 Gerar Insights com IA", use_container_width=True):
-                        st.session_state.insights_data = {}
-                        model = st.session_state.gemini_model
+    with tab3:
+        st.markdown("### 🤖 Insights Gerados por IA")
+
+        if GEMINI_AVAILABLE and st.session_state.model_configured:
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                if st.button("🚀 Gerar Análise Completa com IA", use_container_width=True):
+                    st.session_state.insights_data = {}
+                    model = st.session_state.gemini_model
+                    
+                    with st.spinner("🧠 IA analisando dados..."):
                         iniciar_geracao_insights(model, ticker_selecionado, dados, metricas)
+                        
+                        # Aguardar insights
+                        max_wait = 30  # 30 segundos
+                        start_time = time.time()
+                        
+                        while len(st.session_state.insights_data) < 4 and (time.time() - start_time) < max_wait:
+                            while not st.session_state.insights_queue.empty():
+                                tipo, conteudo = st.session_state.insights_queue.get()
+                                st.session_state.insights_data[tipo] = conteudo
+                            time.sleep(0.5)
 
-                # Coletar insights da fila
-                insights_recebidos = {}
-                while not st.session_state.insights_queue.empty():
-                    tipo, conteudo = st.session_state.insights_queue.get()
-                    insights_recebidos[tipo] = conteudo
-
-                # Atualizar insights no estado
-                st.session_state.insights_data.update(insights_recebidos)
-
-                # Display dos insights
+            # Display dos insights em layout melhorado
+            if st.session_state.insights_data:
                 col1, col2 = st.columns(2)
 
                 with col1:
                     if 'analise_tecnica' in st.session_state.insights_data:
-                        st.markdown('<div class="insight-card">', unsafe_allow_html=True)
-                        st.markdown("#### 📊 Análise Técnica")
+                        st.markdown('''
+                        <div class="insight-card" style="border-left-color: #667eea;">
+                            <h4>📊 Análise Técnica</h4>
+                        </div>
+                        ''', unsafe_allow_html=True)
                         st.markdown(st.session_state.insights_data['analise_tecnica'])
-                        st.markdown('</div>', unsafe_allow_html=True)
 
-                    if 'risco' in st.session_state.insights_data:
-                        st.markdown('<div class="insight-card">', unsafe_allow_html=True)
-                        st.markdown("#### ⚠️ Avaliação de Risco")
-                        st.markdown(st.session_state.insights_data['risco'])
-                        st.markdown('</div>', unsafe_allow_html=True)
+                    if 'risco_volatilidade' in st.session_state.insights_data:
+                        st.markdown('''
+                        <div class="insight-card" style="border-left-color: #ff6b6b;">
+                            <h4>⚠️ Risco e Volatilidade</h4>
+                        </div>
+                        ''', unsafe_allow_html=True)
+                        st.markdown(st.session_state.insights_data['risco_volatilidade'])
 
                 with col2:
                     if 'tendencia' in st.session_state.insights_data:
-                        st.markdown('<div class="insight-card">', unsafe_allow_html=True)
-                        st.markdown("#### 📈 Tendência")
+                        st.markdown('''
+                        <div class="insight-card" style="border-left-color: #00d4aa;">
+                            <h4>📈 Análise de Tendência</h4>
+                        </div>
+                        ''', unsafe_allow_html=True)
                         st.markdown(st.session_state.insights_data['tendencia'])
-                        st.markdown('</div>', unsafe_allow_html=True)
 
-                    if 'recomendacao' in st.session_state.insights_data:
-                        st.markdown('<div class="insight-card">', unsafe_allow_html=True)
-                        st.markdown("#### 💡 Recomendação")
-                        st.markdown(st.session_state.insights_data['recomendacao'])
-                        st.markdown('</div>', unsafe_allow_html=True)
+                    if 'recomendacao_estrategica' in st.session_state.insights_data:
+                        st.markdown('''
+                        <div class="insight-card" style="border-left-color: #f093fb;">
+                            <h4>💡 Sugestão Estratégica</h4>
+                        </div>
+                        ''', unsafe_allow_html=True)
+                        st.markdown(st.session_state.insights_data['recomendacao_estrategica'])
 
-                # Se há insights sendo gerados, mostrar spinner
-                if st.session_state.insights_data and len(st.session_state.insights_data) < 4:
-                    with st.spinner("🔄 Gerando mais insights..."):
+                # Aguardar mais insights se necessário
+                if len(st.session_state.insights_data) < 4:
+                    with st.spinner("🔄 Finalizando análise..."):
                         time.sleep(2)
                         st.rerun()
-
+            
             else:
-                st.warning("🔑 Por favor, insira sua Google API Key na barra lateral para ativar os insights de IA.")
-                st.info("Você pode obter uma chave gratuitamente em: https://makersuite.google.com/app/apikey")
+                st.info("👆 Clique no botão acima para gerar insights personalizados com IA")
+                
+                # Exemplo de insights
+                st.markdown("""
+                <div class="insight-card">
+                    <h4>🌟 Exemplo de Insights que você receberá:</h4>
+                    <ul>
+                        <li>📊 <strong>Análise Técnica:</strong> Interpretação de RSI, MACD, Médias Móveis</li>
+                        <li>📈 <strong>Tendência:</strong> Direção provável baseada em indicadores</li>
+                        <li>⚠️ <strong>Risco:</strong> Avaliação de volatilidade e confiança do modelo</li>
+                        <li>💡 <strong>Estratégia:</strong> Sugestões de ação (acumular, aguardar, etc.)</li>
+                    </ul>
+                    <p><small>Powered by Google Gemini AI</small></p>
+                </div>
+                """, unsafe_allow_html=True)
 
-        with tab4:
-            st.markdown("### 📈 Análise Técnica Detalhada")
+        else:
+            st.warning("🔑 Configure sua Google API Key na barra lateral para ativar insights de IA")
+            st.info("Obtenha uma chave gratuita em: https://makersuite.google.com/app/apikey")
 
-            # Indicadores em colunas
-            col1, col2, col3 = st.columns(3)
+    with tab4:
+        st.markdown("### 📈 Análise Técnica Detalhada")
 
-            with col1:
-                st.markdown("#### 📊 Médias Móveis")
-                st.metric("SMA 7", f"R$ {extrair_valor_escalar(dados['SMA_7'].iloc[-1:]):.2f}")
-                st.metric("SMA 21", f"R$ {extrair_valor_escalar(dados['SMA_21'].iloc[-1:]):.2f}")
-                st.metric("EMA 9", f"R$ {extrair_valor_escalar(dados['EMA_9'].iloc[-1:]):.2f}")
+        # Indicadores em layout organizado
+        st.markdown("#### 📊 Indicadores Principais")
+        
+        col1, col2, col3, col4 = st.columns(4)
 
-            with col2:
-                st.markdown("#### 📈 Momentum")
-                st.metric("RSI (14)", f"{extrair_valor_escalar(dados['RSI'].iloc[-1:]):.2f}")
-                st.metric("MACD", f"{extrair_valor_escalar(dados['MACD'].iloc[-1:]):.4f}")
-                st.metric("MACD Signal", f"{extrair_valor_escalar(dados['MACD_signal'].iloc[-1:]):.4f}")
+        with col1:
+            st.markdown("**🏷️ Médias Móveis**")
+            if 'SMA_7' in dados.columns:
+                st.metric("SMA 7", f"R$ {extrair_valor_escalar(dados['SMA_7'].iloc[-1]):.2f}")
+            if 'SMA_21' in dados.columns:
+                st.metric("SMA 21", f"R$ {extrair_valor_escalar(dados['SMA_21'].iloc[-1]):.2f}")
+            if 'EMA_9' in dados.columns:
+                st.metric("EMA 9", f"R$ {extrair_valor_escalar(dados['EMA_9'].iloc[-1]):.2f}")
 
-            with col3:
-                st.markdown("#### 📉 Volatilidade")
-                st.metric("Bollinger Superior", f"R$ {extrair_valor_escalar(dados['BB_upper'].iloc[-1:]):.2f}")
-                st.metric("Bollinger Inferior", f"R$ {extrair_valor_escalar(dados['BB_lower'].iloc[-1:]):.2f}")
-                st.metric("Largura BB", f"{extrair_valor_escalar(dados['BB_width'].iloc[-1:]):.2f}")
+        with col2:
+            st.markdown("**📈 Momentum**")
+            if 'RSI' in dados.columns:
+                rsi_val = extrair_valor_escalar(dados['RSI'].iloc[-1])
+                st.metric("RSI (14)", f"{rsi_val:.2f}")
+            if 'MACD' in dados.columns:
+                st.metric("MACD", f"{extrair_valor_escalar(dados['MACD'].iloc[-1]):.4f}")
+            if 'MACD_signal' in dados.columns:
+                st.metric("MACD Signal", f"{extrair_valor_escalar(dados['MACD_signal'].iloc[-1]):.4f}")
 
-            # Gráficos de indicadores
-            st.markdown("### 📊 Visualização de Indicadores")
+        with col3:
+            st.markdown("**📉 Bollinger Bands**")
+            if 'BB_upper' in dados.columns:
+                st.metric("BB Superior", f"R$ {extrair_valor_escalar(dados['BB_upper'].iloc[-1]):.2f}")
+            if 'BB_lower' in dados.columns:
+                st.metric("BB Inferior", f"R$ {extrair_valor_escalar(dados['BB_lower'].iloc[-1]):.2f}")
+            if 'BB_width' in dados.columns:
+                st.metric("Largura BB", f"{extrair_valor_escalar(dados['BB_width'].iloc[-1]):.2f}")
 
-            # RSI
-            fig_rsi = go.Figure()
-            fig_rsi.add_trace(go.Scatter(
-                x=dados.index,
-                y=dados['RSI'],
-                name='RSI',
-                line=dict(color='#2196F3', width=2)
-            ))
+        with col4:
+            st.markdown("**📊 Volume & Outros**")
+            if 'Volume_ratio' in dados.columns:
+                st.metric("Volume Ratio", f"{extrair_valor_escalar(dados['Volume_ratio'].iloc[-1]):.2f}x")
+            st.metric("Volatilidade", f"{extrair_valor_escalar(dados['Close'].pct_change().std() * 100):.2f}%")
+            st.metric("Amplitude H-L", f"{(extrair_valor_escalar(dados['High'].iloc[-1]) - extrair_valor_escalar(dados['Low'].iloc[-1])):.2f}")
 
-            # Linhas de referência
-            fig_rsi.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="Sobrecomprado")
-            fig_rsi.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="Sobrevendido")
+        # Gráficos de indicadores
+        st.markdown("#### 📊 Visualização de Indicadores")
 
-            fig_rsi.update_layout(
-                template="plotly_white",
-                height=300,
-                title="RSI (14)",
-                yaxis_title="RSI",
-                xaxis_title="Data"
-            )
+        # RSI com zonas
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if 'RSI' in dados.columns:
+                fig_rsi = go.Figure()
+                
+                fig_rsi.add_trace(go.Scatter(
+                    x=dados.index,
+                    y=dados['RSI'],
+                    name='RSI',
+                    line=dict(color='#667eea', width=3)
+                ))
 
-            st.plotly_chart(fig_rsi, use_container_width=True)
+                # Zonas de RSI
+                fig_rsi.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="Sobrecomprado (70)")
+                fig_rsi.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="Sobrevendido (30)")
+                fig_rsi.add_hline(y=50, line_dash="dot", line_color="gray", annotation_text="Neutro (50)")
 
+                # Área de sobrecompra/sobrevenda
+                fig_rsi.add_shape(type="rect", x0=dados.index[0], x1=dados.index[-1], y0=70, y1=100, 
+                                fillcolor="red", opacity=0.1, line_width=0)
+                fig_rsi.add_shape(type="rect", x0=dados.index[0], x1=dados.index[-1], y0=0, y1=30, 
+                                fillcolor="green", opacity=0.1, line_width=0)
+
+                fig_rsi.update_layout(
+                    template="plotly_white",
+                    height=300,
+                    title="RSI (14) - Índice de Força Relativa",
+                    yaxis_title="RSI",
+                    yaxis=dict(range=[0, 100])
+                )
+
+                st.plotly_chart(fig_rsi, use_container_width=True)
+
+        with col2:
             # MACD
-            fig_macd = go.Figure()
-            fig_macd.add_trace(go.Scatter(
-                x=dados.index,
-                y=dados['MACD'],
-                name='MACD',
-                line=dict(color='#4CAF50', width=2)
-            ))
+            if all(col in dados.columns for col in ['MACD', 'MACD_signal']):
+                fig_macd = go.Figure()
+                
+                fig_macd.add_trace(go.Scatter(
+                    x=dados.index,
+                    y=dados['MACD'],
+                    name='MACD',
+                    line=dict(color='#00d4aa', width=2)
+                ))
 
-            fig_macd.add_trace(go.Scatter(
-                x=dados.index,
-                y=dados['MACD_signal'],
-                name='Signal',
-                line=dict(color='#FFC107', width=2)
-            ))
+                fig_macd.add_trace(go.Scatter(
+                    x=dados.index,
+                    y=dados['MACD_signal'],
+                    name='Signal',
+                    line=dict(color='#f093fb', width=2)
+                ))
 
-            # Histograma MACD
-            macd_hist = dados['MACD'] - dados['MACD_signal']
-            colors = []
-            for val in macd_hist:
-                val_escalar = extrair_valor_escalar(val) if hasattr(val, 'iloc') else float(val)
-                colors.append('#26a69a' if val_escalar >= 0 else '#ef5350')
+                # Histograma MACD
+                macd_hist = dados['MACD'] - dados['MACD_signal']
+                colors_macd = ['#00d4aa' if val >= 0 else '#ff6b6b' for val in macd_hist]
 
-            fig_macd.add_trace(go.Bar(
-                x=dados.index,
-                y=macd_hist,
-                name='Histograma',
-                marker_color=colors
-            ))
+                fig_macd.add_trace(go.Bar(
+                    x=dados.index,
+                    y=macd_hist,
+                    name='Histograma',
+                    marker_color=colors_macd,
+                    opacity=0.7
+                ))
 
-            fig_macd.update_layout(
-                template="plotly_white",
-                height=300,
-                title="MACD",
-                yaxis_title="Valor",
-                xaxis_title="Data"
-            )
+                fig_macd.update_layout(
+                    template="plotly_white",
+                    height=300,
+                    title="MACD - Convergência e Divergência de Médias Móveis",
+                    yaxis_title="Valor"
+                )
 
-            st.plotly_chart(fig_macd, use_container_width=True)
-    else:
-        st.error("❌ Não foi possível carregar os dados da ação selecionada.")
+                st.plotly_chart(fig_macd, use_container_width=True)
 
-# Rodapé
+        # Análise de suporte e resistência
+        st.markdown("#### 🎯 Suporte e Resistência")
+        
+        # Calcular níveis de suporte e resistência
+        periodo_sr = min(50, len(dados))
+        dados_sr = dados.iloc[-periodo_sr:]
+        
+        resistencia = extrair_valor_escalar(dados_sr['High'].max())
+        suporte = extrair_valor_escalar(dados_sr['Low'].min())
+        preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1])
+        
+        # Posição do preço
+        if suporte != resistencia:
+            posicao_pct = ((preco_atual - suporte) / (resistencia - suporte)) * 100
+        else:
+            posicao_pct = 50
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("🔴 Resistência", f"R$ {resistencia:.2f}")
+        with col2:
+            st.metric("🟢 Suporte", f"R$ {suporte:.2f}")
+        with col3:
+            st.metric("📊 Posição", f"{posicao_pct:.1f}%")
+        with col4:
+            amplitude_sr = resistencia - suporte
+            st.metric("📏 Amplitude S/R", f"R$ {amplitude_sr:.2f}")
+
+        # Interpretação dos indicadores
+        st.markdown("#### 🧠 Interpretação Técnica")
+        
+        interpretacoes = []
+        
+        # RSI
+        if 'RSI' in dados.columns:
+            rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1])
+            if rsi_atual > 70:
+                interpretacoes.append("🔴 **RSI:** Ativo em zona de sobrecompra, possível correção")
+            elif rsi_atual < 30:
+                interpretacoes.append("🟢 **RSI:** Ativo em zona de sobrevenda, possível recuperação")
+            else:
+                interpretacoes.append("🟡 **RSI:** Ativo em zona neutra, sem sinais extremos")
+        
+        # Médias móveis
+        if 'SMA_7' in dados.columns and 'SMA_21' in dados.columns:
+            sma7 = extrair_valor_escalar(dados['SMA_7'].iloc[-1])
+            sma21 = extrair_valor_escalar(dados['SMA_21'].iloc[-1])
+            if sma7 > sma21:
+                interpretacoes.append("📈 **Médias Móveis:** Tendência de alta (SMA7 > SMA21)")
+            elif sma7 < sma21:
+                interpretacoes.append("📉 **Médias Móveis:** Tendência de baixa (SMA7 < SMA21)")
+            else:
+                interpretacoes.append("➡️ **Médias Móveis:** Movimento lateral")
+        
+        # Volume
+        volume_atual = extrair_valor_escalar(dados['Volume'].iloc[-1])
+        volume_medio = extrair_valor_escalar(dados['Volume'].mean())
+        if volume_atual > volume_medio * 1.5:
+            interpretacoes.append("📊 **Volume:** Alto volume confirma o movimento")
+        elif volume_atual < volume_medio * 0.5:
+            interpretacoes.append("📊 **Volume:** Baixo volume, movimento sem convicção")
+        else:
+            interpretacoes.append("📊 **Volume:** Volume normal")
+        
+        # Posição S/R
+        if posicao_pct > 80:
+            interpretacoes.append("🎯 **S/R:** Próximo da resistência, cuidado com reversão")
+        elif posicao_pct < 20:
+            interpretacoes.append("🎯 **S/R:** Próximo do suporte, possível sustentação")
+        else:
+            interpretacoes.append("🎯 **S/R:** No meio do canal, sem pressão de S/R")
+        
+        for interpretacao in interpretacoes:
+            st.markdown(f"- {interpretacao}")
+
+    with tab5:
+        st.markdown("### 🔍 Diagnóstico Completo do Sistema")
+        
+        # Status geral
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📋 Status dos Componentes")
+            
+            # Verificar componentes
+            components_status = []
+            
+            # Dados
+            if dados is not None and not dados.empty:
+                components_status.append(("✅", "Dados", f"{len(dados)} registros carregados"))
+            else:
+                components_status.append(("❌", "Dados", "Falha ao carregar"))
+            
+            # Modelo
+            if modelo is not None:
+                components_status.append(("✅", "Modelo", "Carregado com sucesso"))
+            else:
+                components_status.append(("❌", "Modelo", "Falha ao carregar"))
+            
+            # Scaler
+            if scaler is not None:
+                components_status.append(("✅", "Scaler", "Carregado com sucesso"))
+            else:
+                components_status.append(("❌", "Scaler", "Falha ao carregar"))
+            
+            # Métricas
+            if metricas is not None:
+                components_status.append(("✅", "Métricas", f"Modelo: {metricas.get('modelo_nome', 'N/A')}"))
+            else:
+                components_status.append(("❌", "Métricas", "Falha ao carregar"))
+            
+            # IA
+            if st.session_state.model_configured:
+                components_status.append(("✅", "IA Gemini", "Configurada e pronta"))
+            else:
+                components_status.append(("⚠️", "IA Gemini", "Não configurada"))
+            
+            for status, component, description in components_status:
+                st.markdown(f"{status} **{component}:** {description}")
+        
+        with col2:
+            st.markdown("#### 📊 Informações do Modelo")
+            
+            if metricas:
+                st.markdown(f"""
+                **📈 Performance:**
+                - Acurácia: {metricas.get('accuracy', 0)*100:.2f}%
+                - Precisão: {metricas.get('precision', 0):.3f}
+                - Recall: {metricas.get('recall', 0):.3f}
+                - F1 Score: {metricas.get('f1_score', 0):.3f}
+                
+                **🔧 Configurações:**
+                - Modelo: {metricas.get('modelo_nome', 'N/A')}
+                - Janela: {metricas.get('janela', 'N/A')} períodos
+                - Features: {metricas.get('num_features', 'N/A')}
+                
+                **📅 Informações:**
+                - Treinado em: {metricas.get('data_treino', 'N/A')}
+                - Dados treino: {metricas.get('dados_treino', 'N/A'):,}
+                - Dados teste: {metricas.get('dados_teste', 'N/A'):,}
+                """)
+        
+        # Informações dos dados
+        st.markdown("#### 📊 Análise dos Dados Carregados")
+        
+        if dados is not None:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**📈 Estatísticas Básicas**")
+                preco_min = extrair_valor_escalar(dados['Close'].min())
+                preco_max = extrair_valor_escalar(dados['Close'].max())
+                preco_medio = extrair_valor_escalar(dados['Close'].mean())
+                
+                st.markdown(f"""
+                - **Período:** {dados.index[0].strftime('%Y-%m-%d')} a {dados.index[-1].strftime('%Y-%m-%d')}
+                - **Registros:** {len(dados):,}
+                - **Preço mín:** R$ {preco_min:.2f}
+                - **Preço máx:** R$ {preco_max:.2f}
+                - **Preço médio:** R$ {preco_medio:.2f}
+                """)
+            
+            with col2:
+                st.markdown("**📊 Qualidade dos Dados**")
+                
+                # Calcular estatísticas de qualidade
+                total_cells = len(dados) * len(dados.columns)
+                nan_count = dados.isnull().sum().sum()
+                nan_pct = (nan_count / total_cells) * 100
+                
+                zero_prices = (dados['Close'] == 0).sum()
+                zero_pct = (zero_prices / len(dados)) * 100
+                
+                st.markdown(f"""
+                - **Colunas:** {len(dados.columns)}
+                - **NaN total:** {nan_count:,} ({nan_pct:.2f}%)
+                - **Preços zero:** {zero_prices} ({zero_pct:.2f}%)
+                - **Volatilidade:** {extrair_valor_escalar(dados['Close'].pct_change().std() * 100):.2f}%
+                """)
+            
+            with col3:
+                st.markdown("**🔧 Indicadores Calculados**")
+                
+                # Contar indicadores por categoria
+                colunas = dados.columns.tolist()
+                
+                ma_count = len([col for col in colunas if 'SMA_' in col or 'EMA_' in col])
+                momentum_count = len([col for col in colunas if any(x in col for x in ['RSI', 'MACD', 'Williams', 'ROC'])])
+                volume_count = len([col for col in colunas if any(x in col for x in ['Volume', 'OBV', 'MFI', 'CMF'])])
+                volatility_count = len([col for col in colunas if any(x in col for x in ['BB_', 'ATR', 'KC_'])])
+                
+                st.markdown(f"""
+                - **Médias móveis:** {ma_count}
+                - **Momentum:** {momentum_count}
+                - **Volume:** {volume_count}
+                - **Volatilidade:** {volatility_count}
+                - **Total features:** {len(colunas)}
+                """)
+        
+        # Log de features importantes
+        if metricas and 'feature_names' in metricas:
+            st.markdown("#### 🎯 Features Selecionadas pelo Modelo")
+            
+            features = metricas['feature_names']
+            st.markdown(f"**Total de features selecionadas:** {len(features)}")
+            
+            # Agrupar features por categoria
+            categories = {
+                '📈 Médias Móveis': [f for f in features if any(x in f for x in ['SMA_', 'EMA_', 'WMA_', 'KAMA_'])],
+                '⚡ Momentum': [f for f in features if any(x in f for x in ['RSI', 'MACD', 'Williams', 'ROC', 'Stoch', 'CCI'])],
+                '📊 Volume': [f for f in features if any(x in f for x in ['Volume', 'OBV', 'MFI', 'CMF', 'FI', 'VPT'])],
+                '📉 Volatilidade': [f for f in features if any(x in f for x in ['BB_', 'ATR', 'KC_', 'DC_', 'UI'])],
+                '📈 Trend': [f for f in features if any(x in f for x in ['ADX', 'Aroon', 'PSAR', 'Ichimoku', 'STC', 'Trix'])],
+                '🕒 Temporal': [f for f in features if any(x in f for x in ['Day_', 'Week_', 'Month', 'Quarter', 'Is_'])],
+                '📊 Estatísticas': [f for f in features if any(x in f for x in ['Rolling_', 'Log_Return', 'Cum_'])],
+                '🎯 Outros': []
+            }
+            
+            # Classificar features não categorizadas
+            categorized = set()
+            for cat_features in categories.values():
+                categorized.update(cat_features)
+            
+            categories['🎯 Outros'] = [f for f in features if f not in categorized]
+            
+            # Mostrar em colunas
+            col1, col2 = st.columns(2)
+            
+            cats_items = list(categories.items())
+            mid_point = len(cats_items) // 2
+            
+            with col1:
+                for cat, feats in cats_items[:mid_point]:
+                    if feats:
+                        with st.expander(f"{cat} ({len(feats)})"):
+                            for feat in feats[:10]:  # Mostrar apenas os primeiros 10
+                                st.markdown(f"• {feat}")
+                            if len(feats) > 10:
+                                st.markdown(f"... e mais {len(feats) - 10}")
+            
+            with col2:
+                for cat, feats in cats_items[mid_point:]:
+                    if feats:
+                        with st.expander(f"{cat} ({len(feats)})"):
+                            for feat in feats[:10]:
+                                st.markdown(f"• {feat}")
+                            if len(feats) > 10:
+                                st.markdown(f"... e mais {len(feats) - 10}")
+        
+        # Teste de conectividade avançado
+        st.markdown("#### 🌐 Teste de Conectividade Avançado")
+        
+        if st.button("🔍 Executar Teste Completo", use_container_width=True):
+            test_results = []
+            
+            with st.spinner("Executando testes de conectividade..."):
+                # Teste 1: Yahoo Finance
+                try:
+                    test_data = yf.download("AAPL", period="1d", progress=False)
+                    if not test_data.empty:
+                        test_results.append(("✅", "Yahoo Finance", "Conectividade OK"))
+                    else:
+                        test_results.append(("❌", "Yahoo Finance", "Sem dados retornados"))
+                except Exception as e:
+                    test_results.append(("❌", "Yahoo Finance", f"Erro: {str(e)[:50]}..."))
+                
+                # Teste 2: Google Generative AI
+                if GEMINI_AVAILABLE and st.session_state.model_configured:
+                    try:
+                        test_model = st.session_state.gemini_model
+                        test_response = test_model.generate_content("Teste de conectividade")
+                        test_results.append(("✅", "Google Gemini", "API funcionando"))
+                    except Exception as e:
+                        test_results.append(("❌", "Google Gemini", f"Erro: {str(e)[:50]}..."))
+                else:
+                    test_results.append(("⚠️", "Google Gemini", "Não configurado"))
+                
+                # Teste 3: TensorFlow
+                try:
+                    test_tensor = tf.constant([1, 2, 3])
+                    test_results.append(("✅", "TensorFlow", f"Versão {tf.__version__}"))
+                except Exception as e:
+                    test_results.append(("❌", "TensorFlow", f"Erro: {str(e)[:50]}..."))
+                
+                # Teste 4: Bibliotecas de TA
+                try:
+                    test_data_ta = pd.Series([1, 2, 3, 4, 5])
+                    test_sma = ta.trend.sma_indicator(test_data_ta, window=3)
+                    test_results.append(("✅", "TA-Lib", "Indicadores funcionando"))
+                except Exception as e:
+                    test_results.append(("❌", "TA-Lib", f"Erro: {str(e)[:50]}..."))
+            
+            # Mostrar resultados
+            st.markdown("**📋 Resultados dos Testes:**")
+            for status, component, message in test_results:
+                st.markdown(f"{status} **{component}:** {message}")
+        
+        # Informações do sistema
+        st.markdown("#### 💻 Informações do Sistema")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**📚 Versões das Bibliotecas**")
+            try:
+                import sys
+                st.markdown(f"""
+                - **Python:** {sys.version.split()[0]}
+                - **Streamlit:** {st.__version__}
+                - **TensorFlow:** {tf.__version__}
+                - **Pandas:** {pd.__version__}
+                - **NumPy:** {np.__version__}
+                """)
+            except:
+                st.markdown("Erro ao obter versões")
+        
+        with col2:
+            st.markdown("**🔧 Configurações**")
+            st.markdown(f"""
+            - **Cache ativo:** {'✅' if st.cache_data else '❌'}
+            - **Modelos em cache:** {len(st.session_state.model_cache)}
+            - **IA configurada:** {'✅' if st.session_state.model_configured else '❌'}
+            - **Insights gerados:** {len(st.session_state.insights_data)}
+            - **Modo verboso:** {'✅' if st.session_state.verbose_mode else '❌'}
+            """)
+        
+        # Logs de carregamento
+        if st.session_state.loading_logs:
+            st.markdown("#### 📋 Logs de Carregamento")
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"**Últimos {len(st.session_state.loading_logs)} eventos:**")
+            with col2:
+                if st.button("🗑️ Limpar Logs", use_container_width=True):
+                    st.session_state.loading_logs = []
+                    st.rerun()
+            
+            # Mostrar logs em container com scroll
+            with st.container():
+                for log_type, log_msg in reversed(st.session_state.loading_logs[-20:]):  # Últimos 20 logs
+                    if log_type == "success":
+                        st.success(log_msg)
+                    elif log_type == "warning":
+                        st.warning(log_msg)
+                    elif log_type == "error":
+                        st.error(log_msg)
+                    else:
+                        st.info(log_msg)
+        else:
+            st.markdown("#### 📋 Logs de Carregamento")
+            st.info("Nenhum log disponível. Recarregue os dados para ver os logs.")
+        
+        # Botões de ação
+        st.markdown("#### 🛠️ Ações de Manutenção")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if st.button("🔄 Recarregar Dados", use_container_width=True):
+                st.cache_data.clear()
+                st.success("Cache de dados limpo!")
+                st.rerun()
+        
+        with col2:
+            if st.button("🧠 Limpar Cache IA", use_container_width=True):
+                st.session_state.insights_data = {}
+                st.session_state.model_cache = {}
+                st.success("Cache de IA limpo!")
+        
+        with col3:
+            if st.button("📋 Limpar Logs", use_container_width=True):
+                st.session_state.loading_logs = []
+                st.success("Logs limpos!")
+                st.rerun()
+        
+        with col4:
+            if st.button("🔧 Reset Completo", use_container_width=True):
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.cache_data.clear()
+                st.success("Sistema resetado!")
+                st.rerun()
+
+# Disclaimer e rodapé
 st.markdown("---")
-st.markdown(
-    """
-    <div style="text-align: center; color: #888;">
-        <p>Desenvolvido usando Streamlit e Google Generative AI</p>
-        <p>StockAI Predictor v1.0 - Projeto de TCC</p>
+
+# Warnings importantes
+st.markdown("""
+<div class="custom-alert alert-warning">
+    <h4>⚠️ Aviso Legal Importante</h4>
+    <p><strong>Este sistema é apenas para fins educacionais e de demonstração.</strong></p>
+    <ul>
+        <li>📊 As previsões são baseadas em análise técnica e machine learning</li>
+        <li>💰 <strong>NÃO constitui recomendação de investimento</strong></li>
+        <li>📈 Desempenho passado não garante resultados futuros</li>
+        <li>🎯 Sempre consulte profissionais qualificados antes de investir</li>
+        <li>💸 Invista apenas o que pode perder</li>
+    </ul>
+</div>
+""", unsafe_allow_html=True)
+
+# Rodapé informativo
+st.markdown(f"""
+<div style="text-align: center; padding: 2rem; background: rgba(255,255,255,0.1); border-radius: 15px; margin-top: 2rem;">
+    <h4>🚀 StockAI Predictor v2.0</h4>
+    <p>Desenvolvido com Streamlit • TensorFlow • Google Generative AI</p>
+    <p><small>Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</small></p>
+    
+    <div style="margin-top: 1rem;">
+        <span style="margin: 0 10px;">📊 Dados: Yahoo Finance</span>
+        <span style="margin: 0 10px;">🤖 IA: Google Gemini</span>
+        <span style="margin: 0 10px;">📈 Indicadores: TA-Lib</span>
     </div>
-    """,
-    unsafe_allow_html=True
-)
+</div>
+""", unsafe_allow_html=True)
 
-
+# Executar apenas se for script principal
 if __name__ == "__main__":
-    import subprocess
-    subprocess.run(["streamlit", "run", __file__, "--server.port", "8501"])
+    pass
