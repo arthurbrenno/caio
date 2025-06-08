@@ -1483,21 +1483,30 @@ if ticker_selecionado:
                             conf_text = "BAIXA CONFIANÇA"
 
                         st.markdown(f"""
+                        **{conf_emoji} Nível de Confiança: {conf_text}**
+                        
+                        **Análise:** O modelo prevê uma **{'ALTA' if previsao_classe == 1 else 'BAIXA'}** 
+                        com probabilidade de **{max(previsao_proba, 1-previsao_proba):.1%}**.
+                        
+                        **Fatores considerados:**
+                        - 📊 {len(metricas.get('feature_names', []))} indicadores técnicos
+                        - 📈 Dados de {janela} períodos anteriores
+                        - 🌍 Correlações com índices de mercado
+                        - 🤖 Modelo treinado: {metricas.get('modelo_nome', 'N/A')}
+                        
+                        **⚠️ Importante:** Esta previsão é baseada em padrões históricos e não garante resultados futuros. 
+                        Use sempre em conjunto com outras análises e consulte profissionais qualificados.
+                        """)
+                        
+                        # Card adicional com design
+                        st.markdown("""
                         <div class="insight-card">
-                            <h4>{conf_emoji} Nível de Confiança: {conf_text}</h4>
-                            <p><strong>Análise:</strong> O modelo prevê uma <strong>{'ALTA' if previsao_classe == 1 else 'BAIXA'}</strong> 
-                            com probabilidade de <strong>{max(previsao_proba, 1-previsao_proba):.1%}</strong>.</p>
-                            
-                            <p><strong>Fatores considerados:</strong></p>
-                            <ul>
-                                <li>📊 {len(metricas.get('feature_names', []))} indicadores técnicos</li>
-                                <li>📈 Dados de {janela} períodos anteriores</li>
-                                <li>🌍 Correlações com índices de mercado</li>
-                                <li>🤖 Modelo treinado: {metricas.get('modelo_nome', 'N/A')}</li>
-                            </ul>
-                            
-                            <p><strong>⚠️ Importante:</strong> Esta previsão é baseada em padrões históricos e não garante resultados futuros. 
-                            Use sempre em conjunto com outras análises e consulte profissionais qualificados.</p>
+                        <h4>💡 Como interpretar esta previsão:</h4>
+                        <ul>
+                        <li><strong>Alta Confiança (>70%):</strong> Modelo muito seguro da previsão</li>
+                        <li><strong>Confiança Moderada (40-70%):</strong> Previsão com incerteza</li>
+                        <li><strong>Baixa Confiança (<40%):</strong> Cenário indefinido, aguarde mais dados</li>
+                        </ul>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -1542,37 +1551,29 @@ if ticker_selecionado:
 
                 with col1:
                     if 'analise_tecnica' in st.session_state.insights_data:
-                        st.markdown('''
-                        <div class="insight-card" style="border-left-color: #667eea;">
-                            <h4>📊 Análise Técnica</h4>
-                        </div>
-                        ''', unsafe_allow_html=True)
+                        st.markdown("#### 📊 Análise Técnica")
+                        st.markdown('<div class="insight-card">', unsafe_allow_html=True)
                         st.markdown(st.session_state.insights_data['analise_tecnica'])
+                        st.markdown('</div>', unsafe_allow_html=True)
 
                     if 'risco_volatilidade' in st.session_state.insights_data:
-                        st.markdown('''
-                        <div class="insight-card" style="border-left-color: #ff6b6b;">
-                            <h4>⚠️ Risco e Volatilidade</h4>
-                        </div>
-                        ''', unsafe_allow_html=True)
+                        st.markdown("#### ⚠️ Risco e Volatilidade")
+                        st.markdown('<div class="insight-card">', unsafe_allow_html=True)
                         st.markdown(st.session_state.insights_data['risco_volatilidade'])
+                        st.markdown('</div>', unsafe_allow_html=True)
 
                 with col2:
                     if 'tendencia' in st.session_state.insights_data:
-                        st.markdown('''
-                        <div class="insight-card" style="border-left-color: #00d4aa;">
-                            <h4>📈 Análise de Tendência</h4>
-                        </div>
-                        ''', unsafe_allow_html=True)
+                        st.markdown("#### 📈 Análise de Tendência")
+                        st.markdown('<div class="insight-card">', unsafe_allow_html=True)
                         st.markdown(st.session_state.insights_data['tendencia'])
+                        st.markdown('</div>', unsafe_allow_html=True)
 
                     if 'recomendacao_estrategica' in st.session_state.insights_data:
-                        st.markdown('''
-                        <div class="insight-card" style="border-left-color: #f093fb;">
-                            <h4>💡 Sugestão Estratégica</h4>
-                        </div>
-                        ''', unsafe_allow_html=True)
+                        st.markdown("#### 💡 Sugestão Estratégica")
+                        st.markdown('<div class="insight-card">', unsafe_allow_html=True)
                         st.markdown(st.session_state.insights_data['recomendacao_estrategica'])
+                        st.markdown('</div>', unsafe_allow_html=True)
 
                 # Aguardar mais insights se necessário
                 if len(st.session_state.insights_data) < 4:
@@ -1585,17 +1586,15 @@ if ticker_selecionado:
                 
                 # Exemplo de insights
                 st.markdown("""
-                <div class="insight-card">
-                    <h4>🌟 Exemplo de Insights que você receberá:</h4>
-                    <ul>
-                        <li>📊 <strong>Análise Técnica:</strong> Interpretação de RSI, MACD, Médias Móveis</li>
-                        <li>📈 <strong>Tendência:</strong> Direção provável baseada em indicadores</li>
-                        <li>⚠️ <strong>Risco:</strong> Avaliação de volatilidade e confiança do modelo</li>
-                        <li>💡 <strong>Estratégia:</strong> Sugestões de ação (acumular, aguardar, etc.)</li>
-                    </ul>
-                    <p><small>Powered by Google Gemini AI</small></p>
-                </div>
-                """, unsafe_allow_html=True)
+                ### 🌟 Exemplo de Insights que você receberá:
+                
+                - 📊 **Análise Técnica:** Interpretação de RSI, MACD, Médias Móveis
+                - 📈 **Tendência:** Direção provável baseada em indicadores  
+                - ⚠️ **Risco:** Avaliação de volatilidade e confiança do modelo
+                - 💡 **Estratégia:** Sugestões de ação (acumular, aguardar, etc.)
+                
+                *Powered by Google Gemini AI*
+                """)
 
         else:
             st.warning("🔑 Configure sua Google API Key na barra lateral para ativar insights de IA")
@@ -2112,31 +2111,26 @@ st.markdown("---")
 
 # Warnings importantes
 st.markdown("""
-<div class="custom-alert alert-warning">
-    <h4>⚠️ Aviso Legal Importante</h4>
-    <p><strong>Este sistema é apenas para fins educacionais e de demonstração.</strong></p>
-    <ul>
-        <li>📊 As previsões são baseadas em análise técnica e machine learning</li>
-        <li>💰 <strong>NÃO constitui recomendação de investimento</strong></li>
-        <li>📈 Desempenho passado não garante resultados futuros</li>
-        <li>🎯 Sempre consulte profissionais qualificados antes de investir</li>
-        <li>💸 Invista apenas o que pode perder</li>
-    </ul>
-</div>
-""", unsafe_allow_html=True)
+### ⚠️ Aviso Legal Importante
+
+**Este sistema é apenas para fins educacionais e de demonstração.**
+
+- 📊 As previsões são baseadas em análise técnica e machine learning
+- 💰 **NÃO constitui recomendação de investimento**
+- 📈 Desempenho passado não garante resultados futuros
+- 🎯 Sempre consulte profissionais qualificados antes de investir
+- 💸 Invista apenas o que pode perder
+""")
 
 # Rodapé informativo
+st.markdown("---")
 st.markdown(f"""
 <div style="text-align: center; padding: 2rem; background: rgba(255,255,255,0.1); border-radius: 15px; margin-top: 2rem;">
-    <h4>🚀 StockAI Predictor v2.0</h4>
-    <p>Desenvolvido com Streamlit • TensorFlow • Google Generative AI</p>
+    <h3>🚀 StockAI Predictor v2.0</h3>
+    <p><strong>Desenvolvido com Streamlit • TensorFlow • Google Generative AI</strong></p>
     <p><small>Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</small></p>
-    
-    <div style="margin-top: 1rem;">
-        <span style="margin: 0 10px;">📊 Dados: Yahoo Finance</span>
-        <span style="margin: 0 10px;">🤖 IA: Google Gemini</span>
-        <span style="margin: 0 10px;">📈 Indicadores: TA-Lib</span>
-    </div>
+    <br>
+    <p>📊 Dados: Yahoo Finance | 🤖 IA: Google Gemini | 📈 Indicadores: TA-Lib</p>
 </div>
 """, unsafe_allow_html=True)
 
