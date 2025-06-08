@@ -301,20 +301,34 @@ MARKET_INDICES = {
 # === FUNÇÕES AUXILIARES MELHORADAS ===
 
 def extrair_valor_escalar(data):
-    """Extrai valor escalar de qualquer tipo de dado pandas/numpy"""
+    """Extrai valor escalar de qualquer tipo de dado pandas/numpy com verificações de segurança"""
     try:
         if data is None:
             return 0.0
         if isinstance(data, (int, float)):
             return float(data)
         if isinstance(data, np.ndarray):
-            return float(data.flatten()[0]) if len(data.flatten()) > 0 else 0.0
+            if len(data.flatten()) == 0:
+                return 0.0
+            return float(data.flatten()[0])
         if isinstance(data, pd.Series):
-            return float(data.iloc[0]) if len(data) > 0 else 0.0
+            if len(data) == 0:
+                return 0.0
+            # Verificar se há valores válidos
+            valid_data = data.dropna()
+            if len(valid_data) == 0:
+                return 0.0
+            return float(valid_data.iloc[0])
         if isinstance(data, pd.DataFrame):
-            return float(data.iloc[0, 0]) if not data.empty else 0.0
+            if data.empty:
+                return 0.0
+            # Verificar se há valores válidos
+            valid_data = data.dropna()
+            if valid_data.empty:
+                return 0.0
+            return float(valid_data.iloc[0, 0])
         return float(data)
-    except (ValueError, TypeError, IndexError):
+    except (ValueError, TypeError, IndexError, KeyError):
         return 0.0
 
 def log_verbose(message, log_type="info"):
@@ -336,7 +350,7 @@ def log_verbose(message, log_type="info"):
 def verificar_saude_dados(dados):
     """Verifica a qualidade dos dados carregados"""
     if dados is None or dados.empty:
-        return False, "Dados vazios"
+        return False, "Dados vazios ou não carregados"
     
     problemas = []
     
@@ -346,20 +360,27 @@ def verificar_saude_dados(dados):
     if cols_faltantes:
         problemas.append(f"Colunas faltantes: {cols_faltantes}")
     
-    # Verificar valores NaN excessivos
-    nan_pct = dados.isnull().sum().sum() / (len(dados) * len(dados.columns)) * 100
-    if nan_pct > 20:
-        problemas.append(f"Muitos valores NaN: {nan_pct:.1f}%")
-    
     # Verificar quantidade de dados
-    if len(dados) < 50:
-        problemas.append(f"Poucos dados: {len(dados)} registros")
+    if len(dados) < 10:
+        problemas.append(f"Muito poucos dados: {len(dados)} registros (mínimo: 10)")
+    elif len(dados) < 30:
+        problemas.append(f"Poucos dados para análise completa: {len(dados)} registros (recomendado: 30+)")
+    
+    # Verificar valores NaN excessivos
+    if len(dados) > 0:
+        nan_pct = dados.isnull().sum().sum() / (len(dados) * len(dados.columns)) * 100
+        if nan_pct > 20:
+            problemas.append(f"Muitos valores NaN: {nan_pct:.1f}%")
     
     # Verificar preços zerados
-    if 'Close' in dados.columns:
+    if 'Close' in dados.columns and len(dados) > 0:
         zeros_pct = (dados['Close'] == 0).sum() / len(dados) * 100
         if zeros_pct > 5:
             problemas.append(f"Muitos preços zerados: {zeros_pct:.1f}%")
+        
+        # Verificar se há variação nos preços
+        if dados['Close'].nunique() <= 1:
+            problemas.append("Preços sem variação")
     
     if problemas:
         return False, "; ".join(problemas)
@@ -675,6 +696,11 @@ def carregar_dados_ticker(ticker, periodo='1y'):
             log_verbose(f"❌ Nenhum dado encontrado para {ticker}", "error")
             return None
         
+        # Verificar se obtivemos dados suficientes antes de continuar
+        if len(dados) < 5:
+            log_verbose(f"❌ Muito poucos dados baixados: {len(dados)} registros", "error")
+            return None
+        
         # Flatten columns
         if isinstance(dados.columns, pd.MultiIndex):
             dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
@@ -707,6 +733,16 @@ def carregar_dados_ticker(ticker, periodo='1y'):
         dados_com_indicadores.replace([np.inf, -np.inf], np.nan, inplace=True)
         dados_com_indicadores.ffill(inplace=True)
         dados_com_indicadores.dropna(inplace=True)
+        
+        # Verificação final de dados suficientes
+        if len(dados_com_indicadores) < 10:
+            log_verbose(f"❌ Dados insuficientes após processamento: {len(dados_com_indicadores)} registros", "error")
+            return None
+        
+        # Verificar se colunas essenciais ainda existem
+        if 'Close' not in dados_com_indicadores.columns or dados_com_indicadores['Close'].empty:
+            log_verbose("❌ Coluna Close perdida durante processamento", "error")
+            return None
         
         log_verbose(f"✅ Dados carregados: {len(dados_com_indicadores)} registros, {len(dados_com_indicadores.columns)} features", "success")
         return dados_com_indicadores
@@ -1132,12 +1168,37 @@ if ticker_selecionado:
         st.stop()
     
     if dados is None:
+        # Mensagem específica para dados insuficientes
+        st.markdown(f"""
+        <div class="custom-alert alert-warning">
+            <h4>⚠️ Dados Insuficientes</h4>
+            <p><strong>O período "{periodo}" não forneceu dados suficientes para {tickers_disponiveis[ticker_selecionado]}.</strong></p>
+            <p>Possíveis soluções:</p>
+            <ul>
+                <li>📅 Selecione um período maior (6mo, 1y, 2y, 5y)</li>
+                <li>🔄 Verifique se o ticker está correto</li>
+                <li>🌐 Verifique sua conexão com a internet</li>
+                <li>⏰ Tente novamente em alguns minutos</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
         st.stop()
 
     # Verificar qualidade dos dados
     saude_ok, msg_saude = verificar_saude_dados(dados)
     if not saude_ok:
         st.warning(f"⚠️ Problemas detectados nos dados: {msg_saude}")
+        st.stop()
+
+    # Verificação adicional de dados suficientes
+    if len(dados) < 10:
+        st.error(f"❌ Dados insuficientes para análise: {len(dados)} registros. Tente um período maior.")
+        st.stop()
+        
+    # Verificar se a coluna Close existe e tem dados
+    if 'Close' not in dados.columns or dados['Close'].empty:
+        st.error("❌ Dados de preço não disponíveis. Tente outro período ou ticker.")
+        st.stop()
 
     # Interface em abas
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -1152,25 +1213,54 @@ if ticker_selecionado:
         # Métricas principais com cards melhorados
         st.markdown("### 💰 Resumo Financeiro")
         
+        # Verificações de segurança antes de calcular métricas
+        if len(dados) == 0 or 'Close' not in dados.columns:
+            st.error("❌ Dados insuficientes para calcular métricas")
+            st.stop()
+        
+        # Verificar se há dados válidos na coluna Close
+        close_data = dados['Close'].dropna()
+        if len(close_data) == 0:
+            st.error("❌ Não há dados de preço válidos")
+            st.stop()
+        
         col1, col2, col3, col4, col5 = st.columns(5)
+
+        # Calcular métricas com verificações de segurança
+        try:
+            preco_atual = extrair_valor_escalar(close_data.iloc[-1])
+            preco_anterior = extrair_valor_escalar(close_data.iloc[-2]) if len(close_data) > 1 else preco_atual
+            variacao_diaria = ((preco_atual - preco_anterior) / preco_anterior) * 100 if preco_anterior != 0 else 0
+        except (IndexError, KeyError):
+            st.error("❌ Erro ao calcular variação de preço")
+            st.stop()
         
-        # Calcular métricas
-        preco_atual = extrair_valor_escalar(dados['Close'].iloc[-1])
-        preco_anterior = extrair_valor_escalar(dados['Close'].iloc[-2]) if len(dados) > 1 else preco_atual
-        variacao_diaria = ((preco_atual - preco_anterior) / preco_anterior) * 100 if preco_anterior != 0 else 0
+        try:
+            volume_atual = extrair_valor_escalar(dados['Volume'].iloc[-1]) if 'Volume' in dados.columns else 0
+            volume_medio = extrair_valor_escalar(dados['Volume'].mean()) if 'Volume' in dados.columns else 1
+            volume_ratio = volume_atual / volume_medio if volume_medio != 0 else 1
+        except:
+            volume_atual = 0
+            volume_ratio = 1
         
-        volume_atual = extrair_valor_escalar(dados['Volume'].iloc[-1])
-        volume_medio = extrair_valor_escalar(dados['Volume'].mean())
-        volume_ratio = volume_atual / volume_medio if volume_medio != 0 else 1
+        try:
+            rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1]) if 'RSI' in dados.columns else 50
+        except:
+            rsi_atual = 50
         
-        rsi_atual = extrair_valor_escalar(dados['RSI'].iloc[-1]) if 'RSI' in dados.columns else 50
-        volatilidade = extrair_valor_escalar(dados['Close'].pct_change().std() * 100)
+        try:
+            volatilidade = extrair_valor_escalar(close_data.pct_change().std() * 100)
+        except:
+            volatilidade = 0
         
         # Calcular variação mensal
-        if len(dados) >= 22:  # ~1 mês de dados
-            preco_mes_passado = extrair_valor_escalar(dados['Close'].iloc[-22])
-            variacao_mensal = ((preco_atual - preco_mes_passado) / preco_mes_passado) * 100 if preco_mes_passado != 0 else 0
-        else:
+        try:
+            if len(close_data) >= 22:  # ~1 mês de dados
+                preco_mes_passado = extrair_valor_escalar(close_data.iloc[-22])
+                variacao_mensal = ((preco_atual - preco_mes_passado) / preco_mes_passado) * 100 if preco_mes_passado != 0 else 0
+            else:
+                variacao_mensal = 0
+        except:
             variacao_mensal = 0
 
         with col1:
